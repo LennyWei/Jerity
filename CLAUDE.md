@@ -1,8 +1,10 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 Bumper Brawl: a free-for-all bumper-car game for 4 to 8 players in the phone browser, built at HackPSU Fall 2026 (Mystery Stack track: phone motion, rivalry, group of 4+). Phones tilt to steer and hold a button to accelerate; the Node server runs all physics and broadcasts snapshots.
 
-**Read `design.md` before making non-trivial changes.** It is the spec for mechanics, formulas, and scope.
+**Read `design.md` before making non-trivial changes.** It is the spec for mechanics, formulas, and scope. The root `design.md` is authoritative; `ideaDocuments/design.md` is an older draft (still lists team modes as goals), ignore it.
 
 ## Who I am and what I own
 
@@ -32,6 +34,12 @@ npm run fake:client   # headless player that joins TEST and logs everything
 ```
 (Add `npm run dev` / `npm start` for the real server once `server/index.js` exists.)
 
+Env vars: `PORT` (server, default 3000); `SERVER` and `CODE` (fake client, defaults `http://localhost:3000` and `TEST`). `/health` returns `{ ok, rooms }`.
+
+There is no test runner or linter; testing is the fake client plus checking by hand (see Testing).
+
+Planck is not in `package.json` yet: `npm install planck` before writing `game.js`.
+
 ## Layout
 
 ```
@@ -42,6 +50,8 @@ server/fake.js        fake server (kinematic cars, random car-to-car events); cl
 server/fake-client.js headless test player
 design.md             full spec
 ```
+
+Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest sanitized input per player (adding taps), steps physics at `TICK_HZ` (30), and emits `S2C.SNAP` at `SNAP_HZ` (20) with packed cars plus all `EVENT`s queued since the last snapshot. Clients only interpolate and render. Room lifecycle is `ROOM_STATE`: lobby → countdown → playing → roundEnd. The fake server serves `client/dist` statically on the same port.
 
 ## Rules
 
