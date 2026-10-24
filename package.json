@@ -10,6 +10,8 @@
     "dev:phone": "vite --config client/vite.config.js --mode phone"
   },
   "dependencies": {
+    "@google/genai": "^2.31.0",
+    "dotenv": "^18.0.9",
     "express": "^4.21.0",
     "socket.io": "^4.8.0"
   },
