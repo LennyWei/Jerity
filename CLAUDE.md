@@ -65,7 +65,9 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
 - **Taps are a count, not a boolean.** Accumulate `input.taps` on the player until a tick consumes it.
 - ES modules everywhere (`"type": "module"`), Node 20.
 
-## Building the real server (my next steps)
+## Building the real server
+
+Status (Oct 24 evening): steps 1, 2, 3 and 5 are done and tested on branch `server/phase-a`; step 4 (bots) is still the circle-driving stand-in. Left: bots, disconnect grace period (`DISCONNECT_GRACE_MS`), tuning on phones.
 
 1. **`rooms.js`:** lift room logic from `fake.js` as-is (codes, join/leave, colors, ready, host start, countdown, round end, scoring, TEST room). It already matches the contract.
 2. **`game.js`:** replace `stepCar` and `fakeEvents` with a Planck world per room:
@@ -73,8 +75,9 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
    - Fixed `dt = 1/TICK_HZ`, `world.step(dt, 8, 3)`.
    - Driving per design.md section 4: lateral grip impulse, instant launch to `MIN_SPEED`, engine force to `maxSpeed`, `angularVelocity = tilt * turnRate * min(1, speed / MIN_SPEED)`, boost buff multipliers.
    - States: stunned (no input, coast), flipped (no input, heavy damping, count taps), dead (destroy body).
-   - Collect contacts in `post-solve` into a queue with velocities and the world normal; apply after `step`, never inside the callback.
-3. **Hook in `mechanics.js` (mine now, was Person 3's):** call pure functions for car-car hits (head-on vs side/rear), wall/pillar hits, tip-over check, kill reward, scoring. If they are not ready, keep the equivalent logic from `fake.js` (`applyDamage`, `checkDeath`, `surfaceHit`, flip check) and swap later.
+   - Collect contacts in `begin-contact` into a queue with velocities, headings and the world normal; apply after `step`, never inside the callback. Not `post-solve`: by then the solver has already bounced the cars and the hit speed is gone.
+   - Planck gotchas: it mixes restitution with max() (walls override it in `pre-solve`), and it applies `angularDamping` even after you set the angular velocity (damping is 0 while steering).
+3. **`mechanics.js` (mine now, was Person 3's):** pure functions for car-car hits (head-on vs side/rear), wall/pillar hits, tip-over check, kill reward, scoring. `game.js` decides when they apply and applies the results.
 4. **`bots.js`:** steer toward the nearest living car, accel on, tilt clamped below `FLIP_TILT` so bots never flip.
 5. **`index.js`:** Express serving `client/dist` + Socket.IO on one port; `/health` endpoint.
 
@@ -84,7 +87,7 @@ Keep `fake.js` working until the real server passes the same tests; clients may 
 
 - `npm run fake:client` (works against the real server too: `SERVER=http://localhost:3000`).
 - Create a room with `{ bots: 4 }` to test collisions alone.
-- Check by hand: a full-speed side hit does more than a slow one; rear > side; head-on stuns both for ~1.5 s; holding full tilt at full speed flips after ~0.4 s; 8 taps recovers; wall hits cost speed and a little HP; a kill heals the killer 30% and sets `buff`.
+- `npm run sim` measures all of these against design.md and exits 1 if one is off: a full-speed side hit does more than a slow one; rear > side; head-on stuns both for ~1.5 s; holding full tilt at full speed flips after ~0.4 s; 8 taps recovers; wall hits cost speed and a little HP; a kill heals the killer 30% and sets `buff`. Run it after every physics or tuning change.
 - Snapshots must stay small: always go through `packCar`.
 
 ## Deployment (Person 4 sets up; know the shape)

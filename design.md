@@ -144,7 +144,7 @@ For each car:
 5. Apply queued contacts (5.1, 5.2, 5.4), then deaths and kill rewards (5.5), then the win check.
 6. At 20 Hz, broadcast `snap` with the events since the last one.
 
-Collect contacts in the Planck `post-solve` listener into a queue; apply damage after `step`, never inside the callback.
+Collect contacts in the Planck `begin-contact` listener into a queue (with the velocities at that moment); apply damage after `step`, never inside the callback. Not `post-solve`: by then the solver has already bounced the cars and the hit speed is gone.
 
 ---
 
@@ -186,6 +186,7 @@ Common rules:
 - A shield buff or post-recovery invulnerability blocks damage.
 - Record the victim's `lastAttacker` and time for kill credit.
 - The attacker earns `SCORE_PER_DAMAGE` per HP dealt.
+- Knockback: both cars are pushed apart along the hit at `KNOCKBACK_SPEED` (`HEADON_KNOCKBACK_SPEED` after a head-on) and get no throttle or grip for `KNOCKBACK_MS`, so they separate instead of grinding, sliding along each other, or concussing each other again right after the stun.
 
 Why this works: hitting someone's side or rear at speed is the best play, a head-on is a punishing trade for both, and getting caught from behind is the worst outcome. Positioning and approach angle matter, which is where the tilt skill shows.
 
@@ -218,6 +219,7 @@ Tune `FLIP_SPEED_FRAC` and `FLIP_TILT` with first-time players. If judges flip w
   - `KILL_BUFF = 'boost'` (default): acceleration x1.6, top speed x1.15. Rewards aggression and makes the killer visibly dangerous.
   - `KILL_BUFF = 'shield'`: immune to damage. Safer for the killer but lets them stall. Kept as a config switch so the team can try both.
 - Kill credit with no attacker (a solo wall death) gives no reward.
+- A killer knocked to 0 HP in the same crash gets no reward either: both die (a double KO).
 
 ### 5.5 Rounds and scoring
 

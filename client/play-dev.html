@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Dev page: play on the real server (npm run dev) with Person 2's game screen.
+     Stand-in until the real home/lobby screens exist; nothing else imports it.
+       /play-dev.html             join room TEST (3 bots, rounds loop forever)
+       /play-dev.html?room=ABCD   join a room by code
+       /play-dev.html?bots=3      make your own room with 3 bots and start it (restarts after each round)
+       &name=Sam                  your name
+     Laptop: W or Up = accelerate, A/D or Left/Right = steer, Space = tap.
+     Phone: tilt to steer. Phones only allow tilt on HTTPS, so open it through npm run dev:phone. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Play (dev)</title>
+<style>
+  body { margin: 0; background: #0b0d12; color: #e8ecf4; font: 16px system-ui, sans-serif; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; }
+  #start button { font: 700 18px system-ui, sans-serif; padding: 14px 28px; border: 0; border-radius: 12px;
+    background: #ffd23f; color: #111; }
+  #msg { color: #8b95aa; min-height: 1.4em; max-width: 80vw; }
+</style>
+</head>
+<body>
+<div id="start"><button type="button">Tap to play</button><div id="msg"></div></div>
+<script type="module">
+import { io } from 'socket.io-client';
+import { mount, requestMotionPermission } from './src/screens/game.js';
+import { C2S, S2C, ROOM_STATE } from '../shared/protocol.js';
+
+const params = new URLSearchParams(location.search);
+const name = params.get('name') || 'Me';
+const bots = Number(params.get('bots')) || 0;
+const code = (params.get('room') || 'TEST').toUpperCase();
+const msg = (text) => {
+  const el = document.getElementById('msg'); // gone once in the game
+  if (el) el.textContent = text;
+};
+
+document.querySelector('#start button').addEventListener('click', async () => {
+  await requestMotionPermission(); // iPhone: only allowed from a tap
+  msg('Connecting…');
+  const socket = io({ transports: ['websocket'] }); // same origin; Vite proxies /socket.io to :3000
+
+  // The shape screens/game.js expects from net.js.
+  const net = {
+    on(event, fn) { socket.on(event, fn); return () => socket.off(event, fn); },
+    emit(event, payload, ack) { socket.emit(event, payload, ack); },
+  };
+
+  let ownRoom = false;
+  socket.on(S2C.LOBBY, (lobby) => {
+    // Own bot room: start again whenever it is back in the lobby.
+    if (ownRoom && lobby.state === ROOM_STATE.LOBBY && lobby.hostId === socket.id) {
+      socket.emit(C2S.START, {}, () => {});
+    }
+  });
+  socket.on('connect_error', () => msg('Cannot reach the game server. Is npm run dev running?'));
+  // The server restarted (npm run dev restarts it on every save): this socket is a new player
+  // the server has never seen, so start over.
+  socket.io.on('reconnect', () => location.reload());
+
+  socket.once('connect', () => {
+    const joined = (res) => {
+      if (res.error) return msg(res.error);
+      document.getElementById('start').remove();
+      document.title = `Play (dev) · ${res.code || code}`;
+      console.log(`[play-dev] in room ${res.code || code} as ${res.playerId}`);
+      mount(document.body, { net, playerId: res.playerId, onRoundEnd: (r) => console.log('[play-dev] round end', r) });
+      if (res.code) { ownRoom = true; socket.emit(C2S.START, {}, () => {}); }
+    };
+    if (bots) socket.emit(C2S.CREATE_ROOM, { name, bots }, joined);
+    else socket.emit(C2S.JOIN_ROOM, { code, name }, joined);
+  });
+});
+</script>
+</body>
+</html>

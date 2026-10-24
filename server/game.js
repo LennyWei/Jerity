@@ -1,33 +1,26 @@
 // server/game.js
-// One round: cars, driving, damage, deaths, kill rewards, events, and snapshots.
+// One round: cars, driving, contacts, damage, deaths, kill rewards, events, and snapshots.
 // No sockets here. rooms.js makes a game per round, calls step() at TICK_HZ with one input
 // per player, and broadcasts snapshot() at SNAP_HZ. sim.js drives the same object headless.
 //
 // Physics is a Planck world per round (design.md section 4). Planck works in meters and m/s,
 // like config.js; world units (SCALE per meter) appear only when creating bodies and when
-// building snapshots.
-//
-// Phase B (now): real driving and bouncing, but walls cost no HP yet and car-to-car hits are
-// still the random stand-in from fake.js. Phase C takes both from Planck contacts.
+// building snapshots. The damage rules themselves are pure functions in mechanics.js.
 //
 // Timers use simulation time (`now`, ms since the round started), not Date.now(), so a
 // headless run plays out exactly like a live one.
 
 import { World, Vec2, Box, Circle, Edge } from 'planck';
-import { CAR_STATE, EVENT, BUFF, HIT_KIND, packCar } from '../shared/protocol.js';
+import { CAR_STATE, EVENT, BUFF, packCar } from '../shared/protocol.js';
 import {
   ARENA, SCALE, CAR_SIZE, OBSTACLES, SPAWN_RADIUS, CARS, DEFAULT_CAR,
 } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
+import { carHit, wallHit, flipTick, killReward, liveScore } from './mechanics.js';
 
 const NO_INPUT = { tilt: 0, accel: false, taps: 0 };
 const VELOCITY_ITERATIONS = 8; // Planck solver passes per step
 const POSITION_ITERATIONS = 3;
-
-/** Score without the win bonus (snapshot `sc`). The leaderboard adds SCORE_WIN. */
-export function liveScore(st) {
-  return st.damage * CONFIG.SCORE_PER_DAMAGE + st.kills * CONFIG.SCORE_KILL;
-}
 
 /** players: [{ id }] in spawn order. */
 export function createGame(players) {
@@ -35,11 +28,11 @@ export function createGame(players) {
   const cars = new Map();   // id -> car; dead cars stay (without a body) so clients can draw the wreck and the KO
   const stats = new Map();  // id -> { kills, damage } for this round
   const events = [];        // EVENT objects since the last snapshot
+  const contacts = [];      // touches queued during world.step, handled right after it
+  const lastHitAt = new Map(); // car pair or "car|wall" -> sim time of the last hit that counted
   let now = 0;
   let timeLeft = CONFIG.ROUND_TIME_S;
   let lastSnapT = 0;
-  let nextFakeHit = 2000;     // stand-in hit timers, removed in Phase C
-  let nextFakeHeadon = 7000;
 
   buildArena();
   players.forEach((p, i) => addCar(p.id, (2 * Math.PI * i) / players.length));
@@ -58,7 +51,7 @@ export function createGame(players) {
     for (const car of cars.values()) {
       if (car.body) syncFromBody(car);
     }
-    fakeEvents();
+    handleContacts();
     timeLeft -= dt;
   }
 
@@ -98,7 +91,8 @@ export function createGame(players) {
   // World and cars
   // ---------------------------------------------------------------------------
 
-  // Four static wall edges and the pillars. Pillars count as walls for damage (Phase C).
+  // Four static wall edges and the pillars (pillars count as walls). Static bodies have no
+  // user data; car bodies point at their car.
   function buildArena() {
     const w = ARENA.W / SCALE;
     const h = ARENA.H / SCALE;
@@ -111,6 +105,7 @@ export function createGame(players) {
       world.createBody({ position: Vec2(o.x / SCALE, o.y / SCALE) })
         .createFixture(new Circle(o.r / SCALE), { restitution: CONFIG.OBSTACLE_RESTITUTION });
     }
+
     // Planck mixes restitution by taking the larger value, so a car (CAR_RESTITUTION) would
     // bounce off a softer wall at the car's value. Walls and pillars use their own instead.
     world.on('pre-solve', (contact) => {
@@ -119,41 +114,62 @@ export function createGame(players) {
       if (fA.getBody().isStatic()) contact.setRestitution(fA.getRestitution());
       else if (fB.getBody().isStatic()) contact.setRestitution(fB.getRestitution());
     });
+
+    // A new touch, before the solver has bounced anything: the velocities here are the ones
+    // that caused it. Only record it (copies, Planck reuses these vectors); never change the
+    // world inside a callback.
+    world.on('begin-contact', (contact) => {
+      const bA = contact.getFixtureA().getBody();
+      const bB = contact.getFixtureB().getBody();
+      const wm = contact.getWorldManifold(null);
+      if (!wm) return;
+      contacts.push({
+        a: bA.getUserData() || null, // car, or null for a wall or pillar
+        b: bB.getUserData() || null,
+        n: Vec2.clone(wm.normal),    // unit normal from A to B
+        vA: Vec2.clone(bA.getLinearVelocity()),
+        vB: Vec2.clone(bB.getLinearVelocity()),
+        fwdA: bA.getWorldVector(Vec2(1, 0)),
+        fwdB: bB.getWorldVector(Vec2(1, 0)),
+      });
+    });
   }
 
   // On the spawn circle at angle `ang`, facing the center.
   function addCar(id, ang) {
     const spec = CARS[DEFAULT_CAR]; // MVP: everyone drives balanced
-    const x = ARENA.W / 2 + SPAWN_RADIUS * Math.cos(ang);
-    const y = ARENA.H / 2 + SPAWN_RADIUS * Math.sin(ang);
-    const a = wrapAngle(ang + Math.PI);
-    const body = world.createBody({
-      type: 'dynamic',
-      position: Vec2(x / SCALE, y / SCALE),
-      angle: a,
-      bullet: true,        // two cars closing at ~30 m/s would otherwise pass through each other
-      allowSleep: false,
-    });
-    body.createFixture(new Box(CAR_SIZE.W / 2 / SCALE, CAR_SIZE.H / 2 / SCALE), {
-      density: spec.density,
-      restitution: CONFIG.CAR_RESTITUTION,
-    });
-    cars.set(id, {
+    const car = {
       id,
-      body,                     // null once dead
-      x, y, a,                  // world units, copied from the body after every step
+      body: null,               // set below; null once dead
+      x: ARENA.W / 2 + SPAWN_RADIUS * Math.cos(ang), // world units, copied from the body after every step
+      y: ARENA.H / 2 + SPAWN_RADIUS * Math.sin(ang),
+      a: wrapAngle(ang + Math.PI),
       hp: spec.hp,
       maxHp: spec.hp,
       s: CAR_STATE.ALIVE,
       taps: 0,
       flipHeldMs: 0,
       stunUntil: 0,
+      knockUntil: 0,
       invulnUntil: 0,
       buff: BUFF.NONE,
       buffUntil: 0,
       lastAttacker: null,
       lastHitAt: 0,
+    };
+    car.body = world.createBody({
+      type: 'dynamic',
+      position: Vec2(car.x / SCALE, car.y / SCALE),
+      angle: car.a,
+      bullet: true,        // two cars closing at ~30 m/s would otherwise pass through each other
+      allowSleep: false,
+      userData: car,
     });
+    car.body.createFixture(new Box(CAR_SIZE.W / 2 / SCALE, CAR_SIZE.H / 2 / SCALE), {
+      density: spec.density,
+      restitution: CONFIG.CAR_RESTITUTION,
+    });
+    cars.set(id, car);
     stats.set(id, { kills: 0, damage: 0 });
   }
 
@@ -200,19 +216,25 @@ export function createGame(players) {
     const mass = b.getMass();
     const fwd = b.getWorldVector(Vec2(1, 0));
     const right = b.getWorldVector(Vec2(0, 1));
+    const knocked = now < car.knockUntil; // just knocked back: no grip or throttle until it plays out
 
     // Lateral grip: remove most sideways velocity so it drives like a car, not a puck.
-    const lat = Vec2.dot(right, b.getLinearVelocity());
-    b.applyLinearImpulse(Vec2.mul(right, -lat * mass * CONFIG.GRIP), b.getWorldCenter());
+    if (!knocked) {
+      const lat = Vec2.dot(right, b.getLinearVelocity());
+      b.applyLinearImpulse(Vec2.mul(right, -lat * mass * CONFIG.GRIP), b.getWorldCenter());
+    }
 
-    // Throttle: instant launch to MIN_SPEED, then engine force up to max speed.
-    if (input.accel) {
+    // Throttle: instant launch to MIN_SPEED, plus engine force up to max speed. Both in the
+    // same tick: a turning car's forward speed dips just under MIN_SPEED every tick, and with
+    // launch-or-engine it would be relaunched forever and never speed up.
+    if (input.accel && !knocked) {
       b.setLinearDamping(0);
       const maxSpeed = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1);
       const fwdSpeed = Vec2.dot(fwd, b.getLinearVelocity());
       if (fwdSpeed < CONFIG.MIN_SPEED) {
         b.applyLinearImpulse(Vec2.mul(fwd, (CONFIG.MIN_SPEED - fwdSpeed) * mass), b.getWorldCenter());
-      } else if (fwdSpeed < maxSpeed) {
+      }
+      if (Math.max(fwdSpeed, CONFIG.MIN_SPEED) < maxSpeed) {
         b.applyForceToCenter(Vec2.mul(fwd, CONFIG.ENGINE * mass * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1)));
       }
     } else {
@@ -225,16 +247,83 @@ export function createGame(players) {
     b.setAngularDamping(0);
     b.setAngularVelocity(input.tilt * spec.turnRate * Math.min(1, speed / CONFIG.MIN_SPEED));
 
-    // Tip-over: full speed + full steering held too long
-    const greedy = speed >= CONFIG.FLIP_SPEED_FRAC * spec.maxSpeed
-      && Math.abs(input.tilt) >= CONFIG.FLIP_TILT;
-    car.flipHeldMs = greedy ? car.flipHeldMs + dt * 1000 : 0;
+    // Tip-over: full speed + full steering held too long (design.md 5.3)
+    car.flipHeldMs = flipTick(car.flipHeldMs, speed, spec.maxSpeed, input.tilt, dt * 1000);
     if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
       car.s = CAR_STATE.FLIPPED;
       car.taps = 0;
       car.flipHeldMs = 0;
       events.push({ type: EVENT.FLIP, id: car.id });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Contacts (design.md 5.1 and 5.2), handled after world.step: damage can kill a car,
+  // and a dead car's body is destroyed.
+  // ---------------------------------------------------------------------------
+
+  function handleContacts() {
+    for (const c of contacts.splice(0)) {
+      if (c.a && c.b) carContact(c);
+      else if (c.a || c.b) wallContact(c);
+    }
+  }
+
+  // Per pair (or car and walls), so one crunch counts once. Starts the cooldown when it isn't on one.
+  function coolingDown(key) {
+    if (now - (lastHitAt.get(key) ?? -Infinity) < CONFIG.HIT_COOLDOWN_MS) return true;
+    lastHitAt.set(key, now);
+    return false;
+  }
+
+  function carContact({ a, b, n, vA, vB, fwdA, fwdB }) {
+    if (a.s === CAR_STATE.DEAD || b.s === CAR_STATE.DEAD) return;
+    const hit = carHit({ vA, vB, n, fwdA, fwdB, massA: a.body.getMass(), massB: b.body.getMass() });
+    if (!hit || coolingDown([a.id, b.id].sort().join('|'))) return;
+
+    if (hit.type === 'headon') {
+      const dmgA = applyDamage(a, hit.dmg, b.id);
+      const dmgB = applyDamage(b, hit.dmg, a.id);
+      for (const car of [a, b]) {
+        if (car.s === CAR_STATE.ALIVE) { car.s = CAR_STATE.STUNNED; car.stunUntil = now + CONFIG.CONCUSSION_MS; }
+      }
+      events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg: Math.max(dmgA, dmgB), stunMs: CONFIG.CONCUSSION_MS });
+    } else {
+      const [attacker, victim] = hit.attacker === 'A' ? [a, b] : [b, a];
+      const dmg = applyDamage(victim, hit.dmgToVictim, attacker.id);
+      applyDamage(attacker, hit.dmgToAttacker, null);
+      if (dmg > 0) events.push({ type: EVENT.HIT, attacker: attacker.id, victim: victim.id, dmg, kind: hit.kind });
+    }
+    knockApart(a, b, n, hit.type === 'headon' ? CONFIG.HEADON_KNOCKBACK_SPEED : CONFIG.KNOCKBACK_SPEED);
+    checkDeath(a);
+    checkDeath(b);
+  }
+
+  // Pushes two cars apart along the hit (n points from a to b), at least `speed` each, and takes
+  // away their throttle and grip for KNOCKBACK_MS so the push plays out. Without it the instant
+  // launch drives the rammer straight back in and grip cancels the sideways push, so cars grind,
+  // slide along each other, and keep getting hit (head-ons: concussed again right after the stun).
+  function knockApart(a, b, n, speed) {
+    for (const [car, out] of [[a, -1], [b, 1]]) {
+      const v = car.body.getLinearVelocity();
+      const along = Vec2.dot(v, n);
+      const target = out * Math.max(speed, out * along); // keep a bounce that is already faster
+      car.body.setLinearVelocity(Vec2.add(v, Vec2.mul(n, target - along)));
+      car.knockUntil = now + CONFIG.KNOCKBACK_MS;
+    }
+  }
+
+  function wallContact({ a, b, n, vA, vB }) {
+    const car = a || b;
+    if (car.s === CAR_STATE.DEAD) return;
+    // n points from A to B, so "into the wall" is +n when the car is A and -n when it is B.
+    const impact = a ? Math.max(0, Vec2.dot(vA, n)) : Math.max(0, -Vec2.dot(vB, n));
+    const hit = wallHit(impact);
+    if (!hit || coolingDown(`${car.id}|wall`)) return;
+    car.body.setLinearVelocity(Vec2.mul(car.body.getLinearVelocity(), hit.speedKeep));
+    const dmg = applyDamage(car, hit.dmg, null);
+    events.push({ type: EVENT.WALL, id: car.id, dmg });
+    checkDeath(car); // credits lastAttacker if within KILL_CREDIT_MS
   }
 
   // ---------------------------------------------------------------------------
@@ -277,54 +366,14 @@ export function createGame(players) {
     let heal = 0;
     let buff = BUFF.NONE;
     if (killerId) stats.get(killerId).kills += 1;
-    if (killer && killer.s !== CAR_STATE.DEAD) {
-      heal = Math.min(killer.maxHp - killer.hp, Math.round(killer.maxHp * CONFIG.KILL_HEAL_FRAC));
+    // A killer knocked to 0 in the same crash gets no reward: it dies too (a double KO).
+    if (killer && killer.s !== CAR_STATE.DEAD && killer.hp > 0) {
+      ({ heal, buff } = killReward(killer.maxHp, killer.hp));
       killer.hp += heal;
-      buff = CONFIG.KILL_BUFF === 'shield' ? BUFF.SHIELD : BUFF.BOOST;
       killer.buff = buff;
       killer.buffUntil = now + CONFIG.BUFF_MS;
     }
     events.push({ type: EVENT.KILL, attacker: killerId, victim: car.id, heal, buff });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Stand-in from fake.js until Phase C: random car-to-car hits and head-ons
-  // ---------------------------------------------------------------------------
-
-  function fakeEvents() {
-    const alive = aliveCars();
-    if (alive.length < 2) return;
-
-    if (now >= nextFakeHit) {
-      const a = pick(alive);
-      const v = pick(alive.filter(c => c.id !== a.id));
-      const kind = Math.random() < 0.4 ? HIT_KIND.REAR : HIT_KIND.SIDE;
-      const base = 10 + Math.random() * 20;
-      const dmg = applyDamage(v, kind === HIT_KIND.REAR ? base * (1 + CONFIG.REAR_BONUS) : base, a.id);
-      applyDamage(a, dmg * CONFIG.ATTACKER_RECOIL, null);
-      if (dmg > 0) events.push({ type: EVENT.HIT, attacker: a.id, victim: v.id, dmg, kind });
-      checkDeath(v);
-      checkDeath(a);
-      nextFakeHit = now + 2500 + Math.random() * 2500;
-    }
-
-    if (now >= nextFakeHeadon) {
-      const upright = alive.filter(c => c.s === CAR_STATE.ALIVE);
-      if (upright.length >= 2) {
-        const a = pick(upright);
-        const b = pick(upright.filter(c => c.id !== a.id));
-        const base = 6 + Math.random() * 10;
-        const dmgA = applyDamage(a, base, b.id);
-        const dmgB = applyDamage(b, base, a.id);
-        for (const c of [a, b]) {
-          if (c.s === CAR_STATE.ALIVE) { c.s = CAR_STATE.STUNNED; c.stunUntil = now + CONFIG.CONCUSSION_MS; }
-        }
-        events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg: Math.max(dmgA, dmgB), stunMs: CONFIG.CONCUSSION_MS });
-        checkDeath(a);
-        checkDeath(b);
-      }
-      nextFakeHeadon = now + 9000 + Math.random() * 6000;
-    }
   }
 
   return {
@@ -338,8 +387,4 @@ function wrapAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
-}
-
-function pick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
 }

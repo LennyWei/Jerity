@@ -32,6 +32,12 @@ export const CONFIG = {
   FLIPPED_DMG_MULT: 1.5, // flipped cars are easy prey
   KILL_CREDIT_MS: 3000,  // wall death within this of being hit credits the hitter
 
+  // Knockback: a hit that counts pushes both cars apart along the hit and takes away their
+  // throttle and grip for a moment, so they separate instead of grinding or sliding along each other.
+  KNOCKBACK_SPEED: 5,         // m/s apart for each car after a side or rear hit
+  HEADON_KNOCKBACK_SPEED: 8,  // m/s apart after a head-on: far enough to steer past each other after the stun
+  KNOCKBACK_MS: 300,          // no throttle or grip for this long after a knockback (steering still works)
+
   // Tip-over (greedy full speed + full steering)
   FLIP_SPEED_FRAC: 0.85, // at or above this fraction of max speed...
   FLIP_TILT: 0.85,       // ...with |tilt| at or above this...

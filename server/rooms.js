@@ -10,7 +10,8 @@ import {
 } from '../shared/protocol.js';
 import { MIN_PLAYERS, MAX_PLAYERS, NAME_MAX } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
-import { createGame, liveScore } from './game.js';
+import { createGame } from './game.js';
+import { liveScore } from './mechanics.js';
 import { botInput } from './bots.js';
 
 // Server-only details, not tuning.

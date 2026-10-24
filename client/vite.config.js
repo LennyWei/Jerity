@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => ({
       input: {
         gameDev: resolve(here, 'game-dev.html'),
         snapView: resolve(here, 'snap-view.html'),
+        playDev: resolve(here, 'play-dev.html'),
       },
     },
   },
