@@ -36,7 +36,11 @@ const CSS = `
 .bb-pad.accel .lbl { min-width: 128px; padding: 22px 18px; }
 .bb-pad.accel.down .lbl { background: rgba(92,225,160,0.35); border-color: #5ce1a0; transform: scale(0.95); }
 .bb-pad.tap.down .lbl { background: rgba(77,208,225,0.35); border-color: #4dd0e1; transform: scale(0.95); }
-.bb-game.out .bb-pad { display: none; }
+.bb-game.out .bb-pad, .bb-game.out .bb-center { display: none; }
+.bb-center { position: absolute; top: 52px; right: max(14px, env(safe-area-inset-right)); z-index: 3;
+  font: 700 13px system-ui, sans-serif; color: #e8ecf4; padding: 7px 14px; border-radius: 999px;
+  background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.25); touch-action: manipulation; }
+.bb-center.done { color: #5ce1a0; border-color: #5ce1a0; }
 .bb-overlay { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center;
   justify-content: center; gap: 14px; background: rgba(6,8,12,0.94); color: #fff; text-align: center;
   font: 700 20px system-ui, sans-serif; z-index: 5; padding: 24px; }
@@ -74,6 +78,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     <canvas></canvas>
     <div class="bb-pad tap"><div class="lbl">TAP<small>flip back</small></div></div>
     <div class="bb-pad accel"><div class="lbl">ACCEL<small>hold</small></div></div>
+    <button class="bb-center" type="button">Center steering</button>
     <div class="bb-overlay motion"><div>Tilt steering needs motion access</div><button>Enable steering</button></div>
     <div class="bb-overlay rotate"><div class="phone"></div><div>Hold your phone sideways</div></div>
   `;
@@ -111,6 +116,17 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   });
 
   const unbind = input.bindButtons(accelEl, tapEl);
+
+  // Re-center any time: whatever angle you hold now becomes "straight".
+  const centerEl = el.querySelector('.bb-center');
+  let centerTimer = 0;
+  centerEl.addEventListener('click', async () => {
+    await input.recenter();
+    centerEl.textContent = 'Centered ✓';
+    centerEl.classList.add('done');
+    clearTimeout(centerTimer);
+    centerTimer = setTimeout(() => { centerEl.textContent = 'Center steering'; centerEl.classList.remove('done'); }, 900);
+  });
   if (playerId) { input.startSending(net); sending = true; }
   else el.classList.add('out');
 
@@ -289,6 +305,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     clearTimeout(goTimer);
     stopSending();
     unbind();
+    clearTimeout(centerTimer);
     offs.forEach((off) => off());
     document.removeEventListener('visibilitychange', onVisible);
     window.removeEventListener('resize', onResize);

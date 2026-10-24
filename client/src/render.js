@@ -632,11 +632,11 @@ export function createRenderer(canvas, opts = {}) {
       if (hud.countdown > 0) { // driving guide while we calibrate
         ctx.font = '700 16px system-ui, sans-serif';
         ctx.fillStyle = '#ffd23f';
-        ctx.fillText('Hold your phone like a steering wheel, keep it still', cssW / 2, cssH / 2 + 44);
+        ctx.fillText("Hold your phone the way you'll drive and keep it still: that sets straight", cssW / 2, cssH / 2 + 44);
         ctx.font = '600 14px system-ui, sans-serif';
         ctx.fillStyle = '#c8cfdc';
         const tips = [
-          'Tilt to steer  ·  hold ACCEL (right) to drive',
+          'Tilt to steer  ·  hold ACCEL (right) to drive  ·  "Center steering" re-sets straight',
           'Ram SIDES and REARS — head-ons stun you both',
           'Full speed + hard turn = you flip. Ease off when the edges glow red',
         ];
@@ -712,8 +712,9 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillRect(x - 4, y - 4, w + 8, h + 8);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.fillRect(x + w / 2 - 1, y - 2, 2, h + 4);
+    // Center mark: green and wider while you're inside the straight zone
+    ctx.fillStyle = tilt === 0 ? '#5ce1a0' : 'rgba(255,255,255,0.35)';
+    ctx.fillRect(x + w / 2 - (tilt === 0 ? 3 : 1), y - 3, tilt === 0 ? 6 : 2, h + 6);
     const t = Math.max(-1, Math.min(1, tilt));
     ctx.fillStyle = '#ffd23f';
     ctx.fillRect(Math.min(x + w / 2, x + w / 2 + (t * w) / 2), y, Math.abs(t * w) / 2, h);
