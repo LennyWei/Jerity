@@ -2,7 +2,9 @@
 <!-- Person 2's tilt test page. One file, no imports, so Person 4 can host it anywhere on HTTPS.
      Open on an iPhone and an Android phone, hold landscape like a steering wheel, tilt RIGHT.
      The "steer" bar should move right. If it moves left, that platform needs sign -1:
-     write TILT_SIGN_IOS / TILT_SIGN_ANDROID into shared/config.js. -->
+     write TILT_SIGN_IOS / TILT_SIGN_ANDROID into shared/config.js.
+     The math matches client/src/input.js: a wheel angle in the screen's plane, picked from
+     gravity, so it ignores how far the phone is tilted back and ignores auto-rotation. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -51,8 +53,8 @@
   </div>
   <div class="card"><b>accelerationIncludingGravity (m/s²)</b>
     <div>x <span id="gx">–</span></div><div>y <span id="gy">–</span></div><div>z <span id="gz">–</span></div>
-    <div>steering axis raw: <span id="raw">–</span></div>
-    <div>offset: <span id="off">0</span></div>
+    <div>wheel angle: <span id="raw">–</span>° · offset <span id="off">0</span>°</div>
+    <div>held: <span id="hold">–</span> · side <span id="side">–</span></div>
   </div>
   <div class="card"><b>acceleration without gravity</b>
     <div>x <span id="ax">–</span></div><div>y <span id="ay">–</span></div><div>z <span id="az">–</span></div>
@@ -64,11 +66,11 @@
     <div style="color:var(--dim)">Shake = recover from flip. Jerk = one sharp flick (parry).</div>
   </div>
   <div class="card"><b>Tunables (copy into config.js)</b>
-    <label>TILT_MAX_G <input type="number" id="maxg" value="6" step="0.5"></label>
+    <label>TILT_MAX_DEG <input type="number" id="maxg" value="25" step="1"></label>
     <label>TILT_DEADZONE <input type="number" id="dz" value="0.08" step="0.01"></label>
-    <label>SHAKE_ACCEL <input type="number" id="shk" value="14" step="1"></label>
-    <label>SHAKE_GAP_MS <input type="number" id="gap" value="120" step="10"></label>
-    <label>JERK_ACCEL <input type="number" id="jrk" value="22" step="1"></label>
+    <label>SHAKE_ACCEL <input type="number" id="shk" value="11" step="1"></label>
+    <label>SHAKE_GAP_MS <input type="number" id="gap" value="100" step="10"></label>
+    <label>JERK_ACCEL <input type="number" id="jrk" value="18" step="1"></label>
   </div>
 </div>
 
@@ -79,6 +81,7 @@ const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
 $('plat').textContent = isIOS ? 'iOS' : (/Android/.test(navigator.userAgent) ? 'Android' : 'other');
 
 let sign = 1, offset = 0, raw = 0, peak = 0, shakes = 0, jerks = 0, lastShake = 0, lastJerk = 0;
+let side = 1, hold = '–', shakeArmed = true, jerkArmed = true;
 const grav = { x: 0, y: 0, z: 9.81 };
 const num = (id) => parseFloat($(id).value);
 const f = (v) => (v == null ? '–' : v.toFixed(2));
@@ -89,13 +92,12 @@ function angle() {
   if (typeof a !== 'number') a = typeof window.orientation === 'number' ? window.orientation : 0;
   return ((a % 360) + 360) % 360;
 }
-function axis(g, a) {
-  switch (Math.round(a / 90) % 4) {
-    case 1: return g.y;
-    case 2: return g.x;
-    case 3: return -g.y;
-    default: return -g.x;
-  }
+function wheelAngle(gx, gy, side) {
+  const DEG = 180 / Math.PI;
+  const inPlane = Math.atan2(gy * side, gx * side) * DEG;
+  const flat = Math.asin(Math.max(-1, Math.min(1, (gy * side) / 9.81))) * DEG;
+  const w = Math.max(0, Math.min(1, (Math.hypot(gx, gy) - 2) / 3));
+  return w * inPlane + (1 - w) * flat;
 }
 function shape(r) {
   const dz = num('dz');
@@ -108,12 +110,16 @@ function onMotion(e) {
   const g = e.accelerationIncludingGravity;
   if (!g || g.x == null) return;
   const a = angle();
-  raw = axis(g, a) * sign;
+  const ax = Math.abs(g.x), ay = Math.abs(g.y);
+  if (ax > 6 && ax > ay * 1.2) { side = Math.sign(g.x); hold = 'landscape'; }
+  else if (ay > 7 && ay > ax * 2) hold = 'portrait';
+  $('hold').textContent = hold; $('side').textContent = side;
+  raw = wheelAngle(g.x, g.y, side) * sign;
   $('soa').textContent = screen.orientation ? screen.orientation.angle : 'missing';
   $('wo').textContent = typeof window.orientation === 'number' ? window.orientation : 'missing';
   $('ang').textContent = a;
   $('gx').textContent = f(g.x); $('gy').textContent = f(g.y); $('gz').textContent = f(g.z);
-  $('raw').textContent = f(raw);
+  $('raw').textContent = raw.toFixed(1);
 
   const s = shape(raw);
   $('steer').textContent = s.toFixed(3);
@@ -132,8 +138,10 @@ function onMotion(e) {
   $('src').textContent = hasLin ? 'event.acceleration' : 'low-pass fallback';
 
   const now = performance.now(), gap = num('gap');
-  if (mag > num('shk') && now - lastShake >= gap) { lastShake = now; $('shakes').textContent = ++shakes; }
-  if (mag > num('jrk') && now - lastJerk >= gap * 3) { lastJerk = now; $('jerks').textContent = ++jerks; }
+  if (mag < num('shk') * 0.5) shakeArmed = true;
+  if (shakeArmed && mag > num('shk') && now - lastShake >= gap) { shakeArmed = false; lastShake = now; $('shakes').textContent = ++shakes; }
+  if (mag < num('jrk') * 0.4) jerkArmed = true;
+  if (jerkArmed && mag > num('jrk') && now - lastJerk >= 400) { jerkArmed = false; lastJerk = now; $('jerks').textContent = ++jerks; }
 }
 
 $('start').onclick = async () => {
@@ -148,7 +156,7 @@ $('start').onclick = async () => {
     $('status').textContent = 'Error: ' + err.message + (location.protocol !== 'https:' ? ' (not HTTPS)' : '');
   }
 };
-$('cal').onclick = () => { offset = raw; $('off').textContent = f(offset); };
+$('cal').onclick = () => { offset = raw; $('off').textContent = offset.toFixed(1); };
 $('sign').onclick = () => { sign = -sign; $('sign').textContent = 'Sign: ' + (sign > 0 ? '+1' : '−1'); };
 $('reset').onclick = () => { shakes = jerks = 0; peak = 0; $('shakes').textContent = 0; $('jerks').textContent = 0; };
 </script>

@@ -21,8 +21,11 @@ const st = {
   listening: false,
   motionOk: false,       // a devicemotion event with real numbers has arrived
   granted: false,        // requestMotionPermission() succeeded (events may not have arrived yet)
-  raw: 0,                // m/s^2 of gravity on the steering axis (smoothed, sign-corrected)
-  offset: 0,             // calibration
+  angle: 0,              // wheel angle in degrees, + = turned right (smoothed)
+  offset: 0,             // calibration, degrees
+  side: 1,               // which landscape the phone is held in, from gravity (sign of x)
+  hold: null,            // 'landscape' | 'portrait' | null (flat / unknown), from gravity
+  conv: null,            // +1 Android axis convention, -1 if this browser reports inverted gravity
   grav: { x: 0, y: 0, z: G }, // low-passed gravity, for devices without event.acceleration
   linMag: 0,             // |acceleration without gravity|
   accelPointers: new Set(),
@@ -32,6 +35,8 @@ const st = {
   totals: { taps: 0, shakes: 0, jerks: 0 }, // never reset; screens diff these
   lastShakeAt: 0,
   lastJerkAt: 0,
+  shakeArmed: true,      // re-armed once acceleration falls back, so one push counts once
+  jerkArmed: true,
   alive: true,
   seq: 0,
   sendTimer: null,
@@ -55,26 +60,28 @@ export function orientationAngle() {
 }
 
 /**
- * Gravity along the screen's "right" axis, negated so tilting the phone like a
- * steering wheel to the right gives a positive number (Android convention).
- * The per-platform sign is confirmed with public/tilt-test.html.
+ * Steering-wheel angle in degrees (+ = turned right) for a phone held sideways.
+ *
+ * It is measured from gravity in the screen's own plane, so it does not care how far
+ * the phone is tilted back toward the player, and it never reads screen.orientation,
+ * so an auto-rotate in the middle of a hard turn cannot make steering jump.
+ * `side` is the sign of gravity on the phone's short axis. Using gy * side makes the
+ * result the same whether a browser reports gravity with Android's sign or inverted.
  */
-export function steeringAxis(g, angle) {
-  let raw;
-  switch (Math.round(angle / 90) % 4) {
-    case 1: raw = g.y; break;   // landscape, top of phone to the left
-    case 2: raw = g.x; break;   // upside-down portrait
-    case 3: raw = -g.y; break;  // landscape, top of phone to the right
-    default: raw = -g.x;        // portrait
-  }
-  const sign = isIOS ? cfg('TILT_SIGN_IOS', 1) : cfg('TILT_SIGN_ANDROID', 1);
-  return raw * sign;
+export function wheelAngle(gx, gy, side) {
+  const DEG = 180 / Math.PI;
+  const inPlane = Math.atan2(gy * side, gx * side) * DEG;
+  // Nearly flat on a table the in-plane angle is noise; blend toward plain roll there.
+  const flat = Math.asin(Math.max(-1, Math.min(1, (gy * side) / G))) * DEG;
+  const w = Math.max(0, Math.min(1, (Math.hypot(gx, gy) - 2) / 3));
+  return w * inPlane + (1 - w) * flat;
 }
 
-/** Raw axis value -> steering in [-1, 1] with a rescaled deadzone. */
-export function shapeSteer(raw, offset) {
+/** Wheel angle -> steering in [-1, 1] with a rescaled deadzone. */
+export function shapeSteer(angle, offset) {
   const dz = cfg('TILT_DEADZONE', 0.08);
-  const s = (raw - offset) / cfg('TILT_MAX_G', 6);
+  const sign = isIOS ? cfg('TILT_SIGN_IOS', 1) : cfg('TILT_SIGN_ANDROID', 1);
+  const s = ((angle - offset) / cfg('TILT_MAX_DEG', 25)) * sign;
   const m = Math.abs(s);
   if (m < dz) return 0;
   return Math.sign(s) * Math.min(1, (m - dz) / (1 - dz));
@@ -82,7 +89,17 @@ export function shapeSteer(raw, offset) {
 
 export function getTilt() {
   if (st.keySteer) return st.keySteer;
-  return st.motionOk ? shapeSteer(st.raw, st.offset) : 0;
+  return st.motionOk ? shapeSteer(st.angle, st.offset) : 0;
+}
+
+/**
+ * How the phone is physically held, from gravity. `rotate` is the CSS rotation (deg) that
+ * makes the game upright when the screen is stuck in portrait (iPhone rotation lock),
+ * or 0 if unknown. hold is null when the phone is flat or no motion data has arrived.
+ */
+export function holdState() {
+  const conv = st.conv ?? (isIOS ? -1 : 1);
+  return { hold: st.hold, rotate: st.hold === 'landscape' ? (st.side * conv > 0 ? 90 : -90) : 0 };
 }
 
 function onMotion(e) {
@@ -90,9 +107,18 @@ function onMotion(e) {
   if (!g || g.x == null) return;
   st.motionOk = true;
 
-  const raw = steeringAxis(g, orientationAngle());
-  st.raw += (raw - st.raw) * 0.5; // light low-pass; the server blends steering too
-  if (st.calSamples) st.calSamples.push(raw);
+  // Players face the screen, so z is clearly positive in Android's convention unless the
+  // phone is near vertical. Learn the browser's sign from that (only matters for holdState).
+  if (Math.abs(g.z) > 3) st.conv = Math.sign(g.z);
+
+  // Which way is the phone held? Hysteresis so a hard turn doesn't flip it.
+  const ax = Math.abs(g.x), ay = Math.abs(g.y);
+  if (ax > 6 && ax > ay * 1.2) { st.side = Math.sign(g.x); st.hold = 'landscape'; }
+  else if (ay > 7 && ay > ax * 2) st.hold = 'portrait';
+
+  const angle = wheelAngle(g.x, g.y, st.side);
+  st.angle += (angle - st.angle) * 0.5; // light low-pass; the server blends steering too
+  if (st.calSamples) st.calSamples.push(angle);
 
   // Linear acceleration: use the OS value if present, else subtract low-passed gravity.
   st.grav.x += (g.x - st.grav.x) * 0.1;
@@ -106,14 +132,23 @@ function onMotion(e) {
   detectGestures(st.linMag, performance.now());
 }
 
-function detectGestures(mag, now) {
-  const gap = cfg('SHAKE_GAP_MS', 120);
-  if (mag > cfg('SHAKE_ACCEL', 14) && now - st.lastShakeAt >= gap) {
+/**
+ * Counts one shake per push above SHAKE_ACCEL. The detector re-arms only after the
+ * reading falls below half the threshold, so one long push is one shake, not three.
+ */
+export function detectGestures(mag, now) {
+  const shakeAt = cfg('SHAKE_ACCEL', 11);
+  if (mag < shakeAt * 0.5) st.shakeArmed = true;
+  if (st.shakeArmed && mag > shakeAt && now - st.lastShakeAt >= cfg('SHAKE_GAP_MS', 100)) {
+    st.shakeArmed = false;
     st.lastShakeAt = now;
     count('shakes');
   }
-  // A jerk is one sharp move, so give it a longer refractory window than a shake.
-  if (st.alive && mag > cfg('JERK_ACCEL', 22) && now - st.lastJerkAt >= gap * 3) {
+  // A jerk (parry) is one sharp flick, with a longer refractory window.
+  const jerkAt = cfg('JERK_ACCEL', 18);
+  if (mag < jerkAt * 0.4) st.jerkArmed = true;
+  if (st.alive && st.jerkArmed && mag > jerkAt && now - st.lastJerkAt >= 400) {
+    st.jerkArmed = false;
     st.lastJerkAt = now;
     count('jerks');
   }
@@ -171,7 +206,7 @@ export function calibrate(durationMs = 400) {
       const s = st.calSamples || [];
       st.calSamples = null;
       if (s.length) {
-        const max = cfg('TILT_MAX_G', 6);
+        const max = cfg('TILT_MAX_DEG', 25) * 1.5;
         const mean = s.reduce((a, b) => a + b, 0) / s.length;
         st.offset = Math.max(-max, Math.min(max, mean));
       }
@@ -299,7 +334,8 @@ export function totals() {
 /** Snapshot for HUD and debug overlays. */
 export function debugState() {
   return {
-    motionOk: st.motionOk, raw: st.raw, offset: st.offset, tilt: getTilt(),
-    accel: isAccel(), linMag: st.linMag, angle: orientationAngle(), isIOS,
+    motionOk: st.motionOk, angle: st.angle, offset: st.offset, tilt: getTilt(), hold: st.hold,
+    side: st.side, conv: st.conv, accel: isAccel(), linMag: st.linMag,
+    screenAngle: orientationAngle(), isIOS,
   };
 }

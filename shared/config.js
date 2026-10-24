@@ -59,9 +59,18 @@ export const CONFIG = {
   SCORE_KILL: 100,
   SCORE_WIN: 150,
 
-  // Phone tilt
-  TILT_MAX_G: 6,         // m/s^2 on the steering axis that counts as full lock (~37 degrees)
-  TILT_DEADZONE: 0.08,
+  // Phone tilt. Measured as a steering-wheel angle in the screen's plane, so it does
+  // not depend on how far the phone is tilted back. Full lock well before the ~45 deg
+  // where iPhones auto-rotate. (Replaces TILT_MAX_G, which needed 45-60 deg in practice.)
+  TILT_MAX_DEG: 25,      // wheel angle that counts as full lock
+  TILT_DEADZONE: 0.08,   // fraction of TILT_MAX_DEG (2 deg) that counts as straight
   TILT_SIGN_IOS: 1,      // set to -1 if tilting right steers left on iPhone (client/public/tilt-test.html)
   TILT_SIGN_ANDROID: 1,  // same check on Android
+
+  // Phone gestures (client detects, server rules). Values from a motion simulation:
+  // a light 4 Hz shake recovers in ~1.5 s; normal steering never triggers either one.
+  SHAKE_ACCEL: 11,       // m/s^2 without gravity; one count per push
+  SHAKE_GAP_MS: 100,
+  JERK_ACCEL: 18,        // parry flick
+  RECOVER_SHAKES: 12,    // shakes OR RECOVER_TAPS taps, whichever finishes first
 };

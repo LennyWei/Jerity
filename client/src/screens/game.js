@@ -43,7 +43,7 @@ const CSS = `
 .bb-overlay .phone { width: 44px; height: 76px; border: 4px solid #fff; border-radius: 10px;
   animation: bb-rot 1.6s ease-in-out infinite; }
 @keyframes bb-rot { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
-@media (orientation: portrait) { .bb-overlay.rotate { display: flex; } }
+.bb-overlay.rotate.show { display: flex; }
 .bb-overlay.motion.show { display: flex; }
 `;
 
@@ -73,7 +73,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     <div class="bb-pad tap"><div class="lbl">TAP<small>parry · recover</small></div></div>
     <div class="bb-pad accel"><div class="lbl">ACCEL<small>hold</small></div></div>
     <div class="bb-overlay motion"><div>Tilt steering needs motion access</div><button>Enable steering</button></div>
-    <div class="bb-overlay rotate"><div class="phone"></div><div>Rotate your phone sideways</div></div>
+    <div class="bb-overlay rotate"><div class="phone"></div><div>Hold your phone sideways</div></div>
   `;
   root.appendChild(el);
 
@@ -81,6 +81,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   const tapEl = el.querySelector('.bb-pad.tap');
   const accelEl = el.querySelector('.bb-pad.accel');
   const motionEl = el.querySelector('.bb-overlay.motion');
+  const rotateEl = el.querySelector('.bb-overlay.rotate');
 
   const renderer = createRenderer(canvas, {
     showHud: true, fx: params.get('fx') || 'full', fps: params.get('fps') === '1',
@@ -198,10 +199,46 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     return null;
   }
 
+  // ---------------------------------------------------------------------------
+  // Orientation: trust how the phone is held (gravity), not just the screen.
+  // If the screen is portrait (rotation lock on, or mid auto-rotate) but the phone is
+  // sideways, rotate the game ourselves instead of blocking it with an overlay.
+  // ---------------------------------------------------------------------------
+
+  let layoutWant = '', layoutSince = 0, layoutNow = '';
+  function updateLayout(now) {
+    let want = 'normal';
+    if (innerHeight > innerWidth) {
+      const { hold, rotate } = input.holdState();
+      want = hold === 'landscape' && rotate ? `rot${rotate}` : 'rotate';
+    }
+    if (want !== layoutWant) { layoutWant = want; layoutSince = now; }
+    // Ignore brief changes (an auto-rotate mid-turn); the first layout applies at once.
+    const settle = want === 'rotate' && count === null && myState === CAR_STATE.ALIVE ? 700 : 250;
+    if (want === layoutNow || (layoutNow && now - layoutSince < settle)) return;
+    layoutNow = want;
+
+    rotateEl.classList.toggle('show', want === 'rotate');
+    const st = el.style;
+    if (want.startsWith('rot') && want !== 'rotate') {
+      const cw = want === 'rot90';
+      Object.assign(st, {
+        inset: 'auto', width: `${innerHeight}px`, height: `${innerWidth}px`,
+        top: cw ? '0px' : `${innerHeight}px`, left: cw ? `${innerWidth}px` : '0px',
+        transformOrigin: '0 0', transform: `rotate(${cw ? 90 : -90}deg)`,
+      });
+    } else {
+      for (const k of ['inset', 'width', 'height', 'top', 'left', 'transformOrigin', 'transform']) st[k] = '';
+    }
+  }
+  const onResize = () => { layoutNow = ''; };
+  window.addEventListener('resize', onResize);
+
   let raf = 0;
   function frame(now) {
     if (!alive) return;
     raf = requestAnimationFrame(frame);
+    updateLayout(now);
     const view = interp.sample(now);
     renderer.addEvents(interp.takeEvents(), view);
     const flip = updateOwnState();
@@ -222,6 +259,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     unbind();
     offs.forEach((off) => off());
     document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('resize', onResize);
     try { wakeLock?.release(); } catch { /* already released */ }
     renderer.destroy();
     el.remove();
