@@ -68,11 +68,12 @@ export const CONFIG = {
   BOT_TILT_MAX: 0.7,     // below FLIP_TILT, so bots never tip over
   BOT_STEER_GAIN: 2,     // tilt per radian off target (full lock at 20 degrees off)
 
-  // Phone tilt. Measured as a steering-wheel angle in the screen's plane, so it does
-  // not depend on how far the phone is tilted back. Full lock well before the ~45 deg
-  // where iPhones auto-rotate. (Replaces TILT_MAX_G, which needed 45-60 deg in practice.)
-  TILT_MAX_DEG: 25,      // wheel angle that counts as full lock
-  TILT_DEADZONE: 0.08,   // fraction of TILT_MAX_DEG (2 deg) that counts as straight
+  // Phone tilt. Measured as how far the phone's long edge tilts from level, which works for
+  // a steering-wheel grip and a flat controller grip alike (see wheelAngle in input.js).
+  // (Replaces TILT_MAX_G, which needed 45-60 deg in practice.)
+  TILT_MAX_DEG: 30,      // tilt that counts as full lock (iPhones auto-rotate around 45)
+  TILT_DEADZONE: 0.12,   // fraction of TILT_MAX_DEG (3.6 deg) that counts as straight, so hand shake doesn't steer
+  TILT_EXPO: 1.5,        // response curve: 10 deg -> about 12-25% turn depending on grip, 30 deg full lock
   TILT_SIGN_IOS: 1,      // set to -1 if tilting right steers left on iPhone (client/public/tilt-test.html)
   TILT_SIGN_ANDROID: 1,  // same check on Android
 

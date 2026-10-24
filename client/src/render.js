@@ -40,6 +40,8 @@ export function createRenderer(canvas, opts = {}) {
   let fpsAvg = 60;
   let banner = null;      // { text, color, life, max } big center message (KO, CONCUSSED)
   const feed = [];        // kill feed for the spectator board: { text, life }
+  const toasts = [];      // phone: "You hit Bot 2 · REAR -32", { text, color, life }
+  const carFlash = new Map(); // id -> time of last hit, flashes the car white
 
   // -------------------------------------------------------------------------
   // Layout
@@ -107,11 +109,13 @@ export function createRenderer(canvas, opts = {}) {
           const v = pos.get(e.victim), a = pos.get(e.attacker);
           if (!v) break;
           const x = a ? (a.x + v.x) / 2 : v.x, y = a ? (a.y + v.y) / 2 : v.y;
-          const dmg = e.dmg || 0, rear = e.kind === HIT_KIND.REAR;
+          const dmg = Math.round(e.dmg || 0), rear = e.kind === HIT_KIND.REAR;
+          const label = rear ? 'REAR' : 'SIDE';
           sparks(x, y, (6 + Math.min(24, dmg * 0.6)) * (rear ? 1.6 : 1), ['#fff3b0', '#ffd23f', '#ff9f43'], rear ? 340 : 260);
-          if (dmg >= 1) floatText(v.x, v.y - 20, `-${Math.round(dmg)}`, rear ? '#ff3b3b' : '#ff6b6b', (14 + Math.min(16, dmg * 0.4)) * (rear ? 1.25 : 1));
-          if (e.victim === me) hurt(3 + dmg * 0.4, 40 + dmg * 2);
-          else if (e.attacker === me) shake = Math.max(shake, 2);
+          if (dmg >= 1) floatText(v.x, v.y - 20, `${label} -${dmg}`, rear ? '#ff3b3b' : '#ff6b6b', (14 + Math.min(16, dmg * 0.4)) * (rear ? 1.25 : 1));
+          carFlash.set(e.victim, lastNow);
+          if (e.victim === me) { hurt(3 + dmg * 0.4, 40 + dmg * 2); toast(`${nameOf(e.attacker)} hit you · ${label} -${dmg}`, '#ff6b6b'); }
+          else if (e.attacker === me) { shake = Math.max(shake, 2); toast(`You hit ${nameOf(e.victim)} · ${label} -${dmg}`, '#5ce1a0'); }
           break;
         }
         case EVENT.HEADON: {
@@ -124,10 +128,13 @@ export function createRenderer(canvas, opts = {}) {
             if (e.dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 16);
             floatText(c.x, c.y - 44, 'CONCUSSED', '#c8d6ff', 15);
           }
+          carFlash.set(e.a, lastNow);
+          carFlash.set(e.b, lastNow);
           if (e.a === me || e.b === me) {
             hurt(10, 120);
             flashWhite = 1;
             showBanner('CONCUSSED', '#c8d6ff');
+            toast(`Head-on with ${nameOf(e.a === me ? e.b : e.a)} · both -${Math.round(e.dmg || 0)}`, '#c8d6ff');
           }
           break;
         }
@@ -179,6 +186,12 @@ export function createRenderer(canvas, opts = {}) {
     banner = { text, color, life: 0, max: 1600 };
   }
 
+  function toast(text, color) {
+    if (!showHud) return;
+    toasts.unshift({ text, color, life: 0 });
+    toasts.length = Math.min(toasts.length, 3);
+  }
+
   function hurt(amount, vibrateMs) {
     if (!showHud) return; // spectator screen never shakes
     shake = Math.max(shake, Math.min(16, amount));
@@ -226,6 +239,7 @@ export function createRenderer(canvas, opts = {}) {
     flashWhite *= Math.exp(-dt / 120);
     if (banner && (banner.life += dt) >= banner.max) banner = null;
     for (let i = feed.length - 1; i >= 0; i--) if ((feed[i].life += dt) > 8000) feed.splice(i, 1);
+    for (let i = toasts.length - 1; i >= 0; i--) if ((toasts[i].life += dt) > 2200) toasts.splice(i, 1);
   }
 
   // -------------------------------------------------------------------------
@@ -254,6 +268,7 @@ export function createRenderer(canvas, opts = {}) {
 
     const cars = view?.cars || [];
     const order = [...cars].sort((a, b) => rank(a) - rank(b));
+    if (showHud) drawAim(cars);
     for (const c of order) drawCar(c, now);
     for (const c of order) if (c.s !== CAR_STATE.DEAD) drawHpBar(c);
     drawEffects();
@@ -381,6 +396,12 @@ export function createRenderer(canvas, opts = {}) {
       ctx.fillRect(W / 2 - 3, H / 2 - 7, 3, 4);
     }
 
+    const since = now - (carFlash.get(c.id) ?? -1e9);
+    if (since < 180) { // just got hit: white flash
+      ctx.fillStyle = `rgba(255,255,255,${(0.85 * (1 - since / 180)).toFixed(3)})`;
+      roundRect(-W / 2 - 2, -H / 2 - 2, W + 4, H + 4, 8); ctx.fill();
+    }
+
     if (c.id === me) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = '#ffffff';
@@ -412,6 +433,49 @@ export function createRenderer(canvas, opts = {}) {
       }
       ctx.restore();
     }
+  }
+
+  /**
+   * Aim line: from your nose to the car you're lined up on, labeled with the hit you'd land.
+   * Green REAR / yellow SIDE are good hits; red HEAD-ON means you'll both be stunned.
+   */
+  function drawAim(cars) {
+    const mine = cars.find((c) => c.id === me);
+    if (!mine || mine.s !== CAR_STATE.ALIVE) return;
+    const fx = Math.cos(mine.a), fy = Math.sin(mine.a);
+    let target = null, best = 280;
+    for (const c of cars) {
+      if (c.id === me || c.s === CAR_STATE.DEAD) continue;
+      const dx = c.x - mine.x, dy = c.y - mine.y, d = Math.hypot(dx, dy);
+      if (d < best && (dx * fx + dy * fy) / d > Math.cos(0.5)) { best = d; target = c; } // within ~30 deg
+    }
+    if (!target) return;
+    const dx = (target.x - mine.x) / best, dy = (target.y - mine.y) / best;
+    const tfx = Math.cos(target.a), tfy = Math.sin(target.a);
+    const headOn = -(tfx * dx + tfy * dy) >= (CONFIG.HEADON_THRESHOLD ?? 0.7);
+    const rear = tfx * dx + tfy * dy > 0.5;
+    const [label, color] = headOn ? ['HEAD-ON!', '#ff5a5f'] : rear ? ['REAR HIT', '#5ce1a0'] : ['SIDE HIT', '#ffd23f'];
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.setLineDash([8, 8]);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(mine.x + fx * 22, mine.y + fy * 22);
+    ctx.lineTo(target.x - dx * 26, target.y - dy * 26);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, 28, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.font = '800 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.strokeText(label, target.x, target.y + 44);
+    ctx.fillStyle = color;
+    ctx.fillText(label, target.x, target.y + 44);
+    ctx.restore();
   }
 
   function drawHpBar(c) {
@@ -503,12 +567,23 @@ export function createRenderer(canvas, opts = {}) {
       ctx.fillRect(x, y, w * f, h);
       ctx.font = '800 12px system-ui, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillStyle = '#0b0d12';
+      ctx.lineWidth = 3; // readable over the bar and the empty track alike
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.strokeText(`${Math.max(0, Math.round(mine.hp))} HP`, x + 6, y + h / 2 + 1);
+      ctx.fillStyle = '#ffffff';
       ctx.fillText(`${Math.max(0, Math.round(mine.hp))} HP`, x + 6, y + h / 2 + 1);
       const sc = `${Math.round(mine.sc || 0)} pts`;
       ctx.font = '700 15px system-ui, sans-serif';
       pill(cssW - 14 - (ctx.measureText(sc).width + 18) / 2, 20, sc, '#ffd23f', 15);
+      if (typeof hud.speed === 'number') drawSpeed(x, y + h + 12, w, hud);
     }
+
+    // Who hit whom, newest on top, just above the tilt meter
+    toasts.forEach((t, i) => {
+      ctx.globalAlpha = t.life < 1700 ? 1 : 1 - (t.life - 1700) / 500;
+      pill(cssW / 2, cssH - 50 - i * 26, t.text, t.color, 13);
+    });
+    ctx.globalAlpha = 1;
 
     if (typeof hud.tilt === 'number') drawTiltMeter(hud.tilt);
 
@@ -554,12 +629,39 @@ export function createRenderer(canvas, opts = {}) {
       ctx.fillStyle = '#ffffff';
       ctx.font = '900 96px system-ui, sans-serif';
       ctx.fillText(hud.countdown > 0 ? String(hud.countdown) : 'GO!', cssW / 2, cssH / 2 - 20);
-      ctx.font = '600 16px system-ui, sans-serif';
-      ctx.fillStyle = '#c8cfdc';
-      ctx.fillText(hud.countdown > 0 ? 'Hold your phone level like a steering wheel' : '',
-        cssW / 2, cssH / 2 + 50);
+      if (hud.countdown > 0) { // driving guide while we calibrate
+        ctx.font = '700 16px system-ui, sans-serif';
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillText("Hold your phone the way you'll drive and keep it still: that sets straight", cssW / 2, cssH / 2 + 44);
+        ctx.font = '600 14px system-ui, sans-serif';
+        ctx.fillStyle = '#c8cfdc';
+        const tips = [
+          'Tilt to steer  ·  hold ACCEL (right) to drive  ·  "Center steering" re-sets straight',
+          'Ram SIDES and REARS — head-ons stun you both',
+          'Full speed + hard turn = you flip. Ease off when the edges glow red',
+        ];
+        tips.forEach((t, i) => ctx.fillText(t, cssW / 2, cssH / 2 + 72 + i * 22));
+      }
     }
     ctx.textBaseline = 'alphabetic';
+  }
+
+  /** Speedometer under the HP bar, with the speed where full steering starts to flip you. */
+  function drawSpeed(x, y, w, hud) {
+    const max = hud.maxSpeed || 14, f = Math.max(0, Math.min(1, hud.speed / max));
+    const flipAt = Math.min(1, (hud.flipSpeed || max) / max), h = 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    roundRect(x - 4, y - 4, w + 8, h + 22, 8); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(255,90,95,0.35)'; // flip zone
+    ctx.fillRect(x + w * flipAt, y, w * (1 - flipAt), h);
+    ctx.fillStyle = f >= flipAt ? '#ff5a5f' : '#4dd0e1';
+    ctx.fillRect(x, y, w * f, h);
+    ctx.font = '700 11px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#c8cfdc';
+    ctx.fillText(`${hud.speed.toFixed(0)} m/s${f >= flipAt ? '  · no hard turns' : ''}`, x, y + h + 8);
   }
 
   /** Spectator: live leaderboard from `sc` (top right) and kill feed (top left). */
@@ -610,8 +712,9 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillRect(x - 4, y - 4, w + 8, h + 8);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.fillRect(x + w / 2 - 1, y - 2, 2, h + 4);
+    // Center mark: green and wider while you're inside the straight zone
+    ctx.fillStyle = tilt === 0 ? '#5ce1a0' : 'rgba(255,255,255,0.35)';
+    ctx.fillRect(x + w / 2 - (tilt === 0 ? 3 : 1), y - 3, tilt === 0 ? 6 : 2, h + 6);
     const t = Math.max(-1, Math.min(1, tilt));
     ctx.fillStyle = '#ffd23f';
     ctx.fillRect(Math.min(x + w / 2, x + w / 2 + (t * w) / 2), y, Math.abs(t * w) / 2, h);

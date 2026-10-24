@@ -3,8 +3,8 @@
      Open on an iPhone and an Android phone, hold landscape like a steering wheel, tilt RIGHT.
      The "steer" bar should move right. If it moves left, that platform needs sign -1:
      write TILT_SIGN_IOS / TILT_SIGN_ANDROID into shared/config.js.
-     The math matches client/src/input.js: a wheel angle in the screen's plane, picked from
-     gravity, so it ignores how far the phone is tilted back and ignores auto-rotation. -->
+     The math matches client/src/input.js: how far the long edge tilts from level (works for a
+     wheel grip and a flat controller grip), from gravity only, so it ignores auto-rotation. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -66,8 +66,9 @@
     <div style="color:var(--dim)">While flipped, each shake counts as a recovery tap.</div>
   </div>
   <div class="card"><b>Tunables (copy into config.js)</b>
-    <label>TILT_MAX_DEG <input type="number" id="maxg" value="25" step="1"></label>
-    <label>TILT_DEADZONE <input type="number" id="dz" value="0.08" step="0.01"></label>
+    <label>TILT_MAX_DEG <input type="number" id="maxg" value="30" step="1"></label>
+    <label>TILT_DEADZONE <input type="number" id="dz" value="0.12" step="0.01"></label>
+    <label>TILT_EXPO <input type="number" id="expo" value="1.5" step="0.1"></label>
     <label>SHAKE_ACCEL <input type="number" id="shk" value="11" step="1"></label>
     <label>SHAKE_GAP_MS <input type="number" id="gap" value="100" step="10"></label>
   </div>
@@ -91,18 +92,31 @@ function angle() {
   if (typeof a !== 'number') a = typeof window.orientation === 'number' ? window.orientation : 0;
   return ((a % 360) + 360) % 360;
 }
-function wheelAngle(gx, gy, side) {
-  const DEG = 180 / Math.PI;
-  const inPlane = Math.atan2(gy * side, gx * side) * DEG;
-  const flat = Math.asin(Math.max(-1, Math.min(1, (gy * side) / 9.81))) * DEG;
-  const w = Math.max(0, Math.min(1, (Math.hypot(gx, gy) - 2) / 3));
-  return w * inPlane + (1 - w) * flat;
+function wheelAngle(gx, gy, gz, side) {
+  const mag = Math.hypot(gx, gy, gz) || 9.81;
+  const bank = Math.asin(Math.max(-1, Math.min(1, (gy * side) / mag))) * (180 / Math.PI);
+  const upright = Math.max(0.5, Math.min(1, Math.hypot(gx, gy) / mag));
+  return bank / Math.sqrt(upright);
+}
+// Calibrated pose (same as makeRef / poseAngle in input.js)
+let ref = null, lastG = null;
+function makeRef(g0, side) {
+  const m = Math.hypot(g0.x, g0.y, g0.z) || 9.81;
+  const u = { x: g0.x / m, y: g0.y / m, z: g0.z / m };
+  const r = { x: -u.y * u.x, y: 1 - u.y * u.y, z: -u.y * u.z };
+  const rm = Math.hypot(r.x, r.y, r.z) || 1;
+  return { r: { x: r.x / rm, y: r.y / rm, z: r.z / rm }, gain: 1 / Math.sqrt(Math.max(0.5, Math.min(1, Math.hypot(u.x, u.y)))), side };
+}
+function poseAngle(g, ref) {
+  const mag = Math.hypot(g.x, g.y, g.z) || 9.81;
+  const d = (g.x * ref.r.x + g.y * ref.r.y + g.z * ref.r.z) / mag;
+  return Math.asin(Math.max(-1, Math.min(1, d))) * (180 / Math.PI) * ref.side * ref.gain;
 }
 function shape(r) {
   const dz = num('dz');
   const s = (r - offset) / num('maxg');
   const m = Math.abs(s);
-  return m < dz ? 0 : Math.sign(s) * Math.min(1, (m - dz) / (1 - dz));
+  return m < dz ? 0 : Math.sign(s) * Math.pow(Math.min(1, (m - dz) / (1 - dz)), num('expo'));
 }
 
 function onMotion(e) {
@@ -113,7 +127,8 @@ function onMotion(e) {
   if (ax > 6 && ax > ay * 1.2) { side = Math.sign(g.x); hold = 'landscape'; }
   else if (ay > 7 && ay > ax * 2) hold = 'portrait';
   $('hold').textContent = hold; $('side').textContent = side;
-  raw = wheelAngle(g.x, g.y, side) * sign;
+  lastG = { x: g.x, y: g.y, z: g.z || 0 };
+  raw = (ref && ref.side === side ? poseAngle(lastG, ref) + offset : wheelAngle(g.x, g.y, g.z || 0, side)) * sign;
   $('soa').textContent = screen.orientation ? screen.orientation.angle : 'missing';
   $('wo').textContent = typeof window.orientation === 'number' ? window.orientation : 'missing';
   $('ang').textContent = a;
@@ -154,7 +169,10 @@ $('start').onclick = async () => {
     $('status').textContent = 'Error: ' + err.message + (location.protocol !== 'https:' ? ' (not HTTPS)' : '');
   }
 };
-$('cal').onclick = () => { offset = raw; $('off').textContent = offset.toFixed(1); };
+$('cal').onclick = () => {
+  if (lastG && hold === 'landscape') { ref = makeRef(lastG, side); offset = 0; } else offset = raw;
+  $('off').textContent = ref ? 'pose' : offset.toFixed(1);
+};
 $('sign').onclick = () => { sign = -sign; $('sign').textContent = 'Sign: ' + (sign > 0 ? '+1' : '−1'); };
 $('reset').onclick = () => { shakes = 0; peak = 0; $('shakes').textContent = 0; };
 </script>

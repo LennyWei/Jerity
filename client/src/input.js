@@ -25,7 +25,8 @@ const st = {
   motionOk: false,       // a devicemotion event with real numbers has arrived
   granted: false,        // requestMotionPermission() succeeded (events may not have arrived yet)
   angle: 0,              // wheel angle in degrees, + = turned right (smoothed)
-  offset: 0,             // calibration, degrees
+  offset: 0,             // calibration, degrees (fallback when there is no pose)
+  ref: null,             // calibrated pose from makeRef: center + sensitivity follow the grip
   side: 1,               // which landscape the phone is held in, from gravity (sign of x)
   hold: null,            // 'landscape' | 'portrait' | null (flat / unknown), from gravity
   conv: null,            // +1 Android axis convention, -1 if this browser reports inverted gravity
@@ -61,36 +62,66 @@ export function orientationAngle() {
 }
 
 /**
- * Steering-wheel angle in degrees (+ = turned right) for a phone held sideways.
+ * Steering angle in degrees (+ = turned right) for a phone held sideways.
  *
- * It is measured from gravity in the screen's own plane, so it does not care how far
- * the phone is tilted back toward the player, and it never reads screen.orientation,
- * so an auto-rotate in the middle of a hard turn cannot make steering jump.
- * `side` is the sign of gravity on the phone's short axis. Using gy * side makes the
- * result the same whether a browser reports gravity with Android's sign or inverted.
+ * It is how far the phone's long edge tilts away from level (its bank against gravity),
+ * which is the same whether you turn it like a steering wheel or roll it like a game
+ * controller held flat. Tilting the phone back weakens that reading a little, so it gets
+ * a mild boost (at most 1.4x). The old in-the-screen-plane angle blew small rolls up 3x
+ * when the phone was held back, so a tiny tilt was nearly full lock.
+ * It never reads screen.orientation, so an auto-rotate mid-turn cannot make steering jump.
+ * `side` is the sign of gravity on the phone's short axis; gy * side gives the same result
+ * whether a browser reports gravity with Android's sign or inverted.
  */
-export function wheelAngle(gx, gy, side) {
-  const DEG = 180 / Math.PI;
-  const inPlane = Math.atan2(gy * side, gx * side) * DEG;
-  // Nearly flat on a table the in-plane angle is noise; blend toward plain roll there.
-  const flat = Math.asin(Math.max(-1, Math.min(1, (gy * side) / G))) * DEG;
-  const w = Math.max(0, Math.min(1, (Math.hypot(gx, gy) - 2) / 3));
-  return w * inPlane + (1 - w) * flat;
+export function wheelAngle(gx, gy, gz, side) {
+  const mag = Math.hypot(gx, gy, gz) || G;
+  const bank = Math.asin(Math.max(-1, Math.min(1, (gy * side) / mag))) * (180 / Math.PI);
+  const upright = Math.max(0.5, Math.min(1, Math.hypot(gx, gy) / mag)); // cos of tilt-back
+  return bank / Math.sqrt(upright);
+}
+
+/**
+ * The calibrated pose: how the player held the phone when they set "straight".
+ * g0 is gravity at that moment (device axes, any length); side is which landscape.
+ * The steering axis r is the phone's long edge, leveled for that pose, so the neutral
+ * hold reads exactly 0 however the phone is tilted back or held crooked. gain makes up
+ * for the long edge moving less when the phone is held back (at most 1.4x), and is fixed
+ * at calibration so sensitivity doesn't shift while you play.
+ */
+export function makeRef(g0, side) {
+  const m = Math.hypot(g0.x, g0.y, g0.z) || G;
+  const u = { x: g0.x / m, y: g0.y / m, z: g0.z / m };
+  const r = { x: -u.y * u.x, y: 1 - u.y * u.y, z: -u.y * u.z }; // long edge minus its gravity part
+  const rm = Math.hypot(r.x, r.y, r.z) || 1;
+  return {
+    r: { x: r.x / rm, y: r.y / rm, z: r.z / rm },
+    gain: 1 / Math.sqrt(Math.max(0.5, Math.min(1, Math.hypot(u.x, u.y)))),
+    side,
+  };
+}
+
+/** Steering angle in degrees (+ = right) relative to the calibrated pose. */
+export function poseAngle(gx, gy, gz, ref) {
+  const mag = Math.hypot(gx, gy, gz) || G;
+  const d = (gx * ref.r.x + gy * ref.r.y + gz * ref.r.z) / mag;
+  return Math.asin(Math.max(-1, Math.min(1, d))) * (180 / Math.PI) * ref.side * ref.gain;
 }
 
 /** Wheel angle -> steering in [-1, 1] with a rescaled deadzone. */
 export function shapeSteer(angle, offset) {
   const dz = cfg('TILT_DEADZONE', 0.08);
   const sign = isIOS ? cfg('TILT_SIGN_IOS', 1) : cfg('TILT_SIGN_ANDROID', 1);
-  const s = ((angle - offset) / cfg('TILT_MAX_DEG', 25)) * sign;
+  const s = ((angle - offset) / cfg('TILT_MAX_DEG', 30)) * sign;
   const m = Math.abs(s);
   if (m < dz) return 0;
-  return Math.sign(s) * Math.min(1, (m - dz) / (1 - dz));
+  // Response curve: small tilts give fine control, full lock is unchanged.
+  const lin = Math.min(1, (m - dz) / (1 - dz));
+  return Math.sign(s) * Math.pow(lin, cfg('TILT_EXPO', 1));
 }
 
 export function getTilt() {
   if (st.keySteer) return st.keySteer;
-  return st.motionOk ? shapeSteer(st.angle, st.offset) : 0;
+  return st.motionOk ? shapeSteer(st.angle, 0) : 0; // st.angle is already relative to center
 }
 
 /**
@@ -117,9 +148,14 @@ function onMotion(e) {
   if (ax > 6 && ax > ay * 1.2) { st.side = Math.sign(g.x); st.hold = 'landscape'; }
   else if (ay > 7 && ay > ax * 2) st.hold = 'portrait';
 
-  const angle = wheelAngle(g.x, g.y, st.side);
+  // Relative to the calibrated pose when we have one for this landscape side; otherwise
+  // the plain angle minus the calibrated offset (before the first calibration, or after
+  // the phone was turned around).
+  const gz = g.z ?? 0;
+  const plain = wheelAngle(g.x, g.y, gz, st.side);
+  const angle = st.ref && st.ref.side === st.side ? poseAngle(g.x, g.y, gz, st.ref) : plain - st.offset;
   st.angle += (angle - st.angle) * 0.5; // light low-pass; the server blends steering too
-  if (st.calSamples) st.calSamples.push(angle);
+  if (st.calSamples) st.calSamples.push({ x: g.x, y: g.y, z: gz, plain });
 
   // Linear acceleration: use the OS value if present, else subtract low-passed gravity.
   st.grav.x += (g.x - st.grav.x) * 0.1;
@@ -188,24 +224,36 @@ function listen() {
 }
 
 /**
- * Treat the current hold as "straight". Averages samples over durationMs.
- * Resolves with the new offset. Safe to call without motion (resolves 0).
+ * Treat the way the phone is held right now as "straight": records the whole pose
+ * (see makeRef), so center and sensitivity follow the player's own grip. Collects samples
+ * for durationMs and uses the median of the last 60%, so the moment of tapping Start
+ * (phone still moving into position) and single jolts don't shift it.
+ * Safe to call without motion (keeps the old calibration).
  */
 export function calibrate(durationMs = 400) {
   listen();
   st.calSamples = [];
   return new Promise((resolve) => {
     setTimeout(() => {
-      const s = st.calSamples || [];
+      const all = st.calSamples || [];
+      const s = all.slice(-Math.ceil(all.length * 0.6));
       st.calSamples = null;
       if (s.length) {
-        const max = cfg('TILT_MAX_DEG', 25) * 1.5;
-        const mean = s.reduce((a, b) => a + b, 0) / s.length;
-        st.offset = Math.max(-max, Math.min(max, mean));
+        const median = (k) => { const v = s.map((p) => p[k]).sort((a, b) => a - b); return v[v.length >> 1]; };
+        const max = cfg('TILT_MAX_DEG', 30) * 1.5;
+        st.offset = Math.max(-max, Math.min(max, median('plain')));
+        if (st.hold === 'landscape') st.ref = makeRef({ x: median('x'), y: median('y'), z: median('z') }, st.side);
+        st.angle = 0;
       }
       resolve(st.offset);
     }, durationMs);
   });
+}
+
+/** Re-center right now (in-game Center button): quick, from the current hold. */
+export function recenter() {
+  if (!st.motionOk) return Promise.resolve(st.offset);
+  return calibrate(250);
 }
 
 // ---------------------------------------------------------------------------
