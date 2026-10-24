@@ -1,7 +1,8 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "client/dist",
-  "redirects": [
-    { "source": "/", "destination": "/game-dev.html", "permanent": false }
+  "rewrites": [
+    { "source": "/join/:code", "destination": "/index.html" },
+    { "source": "/spectate/:code", "destination": "/index.html" }
   ]
 }
