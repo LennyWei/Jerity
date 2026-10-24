@@ -1,17 +1,19 @@
 // server/fake.js
 // FAKE SERVER so the client, lobby, and spectator can be built before real physics exists.
 //
-// What is real here (keep or port into rooms.js):
+// Real here (port into rooms.js / mechanics.js):
 //   - Every message in shared/protocol.js, with the exact shapes
-//   - Room codes, join/leave, teams, car pick, ready, host start, countdown, round end
+//   - Room codes, join/leave, colors, ready, host start, countdown, round end, scoring
+//   - Tip-over from input (full speed + full tilt), tap recovery, wall/pillar penalty,
+//     kill heal + buff, stun timing
 //
-// What is fake (replace with Planck in game.js):
-//   - Cars move kinematically (no collisions between cars)
-//   - Hits and flips are random events every few seconds
+// Fake (replace with Planck in game.js):
+//   - Cars move kinematically and pass through each other
+//   - Car-to-car hits and head-ons are random events every few seconds
 //
 // Run:  npm install && npm run fake    ->  http://localhost:3000
-// A room "TEST" always exists with 3 bots looping rounds. Join it from any client
-// with code TEST to get a drivable car immediately (no lobby needed).
+// Room "TEST" always exists with 3 bots looping rounds. Join it with code TEST to get
+// a drivable car immediately (no lobby needed).
 
 import express from 'express';
 import http from 'http';
@@ -20,11 +22,11 @@ import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
 import {
-  C2S, S2C, MODES, ROOM_STATE, CAR_STATE, EVENT,
+  C2S, S2C, ROOM_STATE, CAR_STATE, EVENT, BUFF, HIT_KIND,
   sanitizeInput, packCar, CODE_ALPHABET, CODE_LENGTH,
 } from '../shared/protocol.js';
 import {
-  ARENA, SCALE, CAR_SIZE, MAX_PLAYERS, OBSTACLES, SPAWN_RADIUS, CARS, DEFAULT_CAR,
+  ARENA, SCALE, CAR_SIZE, MIN_PLAYERS, MAX_PLAYERS, OBSTACLES, SPAWN_RADIUS, CARS, DEFAULT_CAR,
 } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 
@@ -57,44 +59,39 @@ function makeCode() {
 function newRoom(code, hostId, devRoom = false) {
   const room = {
     code, hostId, devRoom,
-    mode: 'ffa',
     state: ROOM_STATE.LOBBY,
     players: new Map(),   // id -> player
     cars: new Map(),      // id -> car
     events: [],
     timeLeft: CONFIG.ROUND_TIME_S,
     nextFakeHit: 0,
-    nextFakeFlip: 0,
+    nextFakeHeadon: 0,
     timers: [],
   };
   rooms.set(code, room);
   return room;
 }
 
-function teamFor(room, index) {
-  if (room.mode === 'ffa') return index;
-  return index % 2;
+function freeColor(room) {
+  const used = new Set([...room.players.values()].map(p => p.color));
+  for (let i = 0; i < MAX_PLAYERS; i++) if (!used.has(i)) return i;
+  return 0;
 }
 
 function addPlayer(room, id, name, isBot = false) {
   const p = {
     id,
     name: String(name || 'Player').slice(0, 12),
-    team: teamFor(room, room.players.size),
-    car: DEFAULT_CAR,
+    color: freeColor(room),
     ready: isBot,
     isBot,
     botDir: Math.random() < 0.5 ? 1 : -1,
     input: { seq: 0, tilt: 0, accel: false, taps: 0 },
     kills: 0,
-    survived: 0,
+    damage: 0,
   };
   room.players.set(id, p);
   return p;
-}
-
-function reassignTeams(room) {
-  [...room.players.values()].forEach((p, i) => { p.team = teamFor(room, i); });
 }
 
 function humans(room) {
@@ -104,11 +101,10 @@ function humans(room) {
 function lobbyState(room) {
   return {
     code: room.code,
-    mode: room.mode,
     hostId: room.hostId,
     state: room.state,
     players: [...room.players.values()].map(p => ({
-      id: p.id, name: p.name, team: p.team, car: p.car, ready: p.ready,
+      id: p.id, name: p.name, color: p.color, ready: p.ready,
     })),
   };
 }
@@ -127,15 +123,21 @@ function clearTimers(room) {
 // ---------------------------------------------------------------------------
 
 function makeCar(p, x, y, a) {
+  const spec = CARS[DEFAULT_CAR]; // MVP: everyone drives balanced
   return {
     id: p.id, x, y, a,
-    speed: 0,
-    hp: CARS[p.car].hp,
+    speed: 0,                 // world units / s
+    hp: spec.hp,
+    maxHp: spec.hp,
     s: CAR_STATE.ALIVE,
-    parry: 0,
-    parryUntil: 0,
-    parryReadyAt: 0,
     taps: 0,
+    flipHeldMs: 0,
+    stunUntil: 0,
+    invulnUntil: 0,
+    buff: BUFF.NONE,
+    buffUntil: 0,
+    lastAttacker: null,
+    lastHitAt: 0,
     botRecoverAt: 0,
   };
 }
@@ -149,7 +151,7 @@ function spawnAll(room) {
     const y = ARENA.H / 2 + SPAWN_RADIUS * Math.sin(ang);
     room.cars.set(p.id, makeCar(p, x, y, ang + Math.PI)); // face the center
     p.kills = 0;
-    p.survived = 0;
+    p.damage = 0;
   });
 }
 
@@ -157,6 +159,10 @@ function spawnOne(room, p) {
   const x = 100 + Math.random() * (ARENA.W - 200);
   const y = 100 + Math.random() * (ARENA.H - 200);
   room.cars.set(p.id, makeCar(p, x, y, Math.random() * Math.PI * 2));
+}
+
+function liveScore(p) {
+  return p.damage * CONFIG.SCORE_PER_DAMAGE + p.kills * CONFIG.SCORE_KILL;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,54 +188,37 @@ function startCountdown(room) {
       room.state = ROOM_STATE.PLAYING;
       room.timeLeft = CONFIG.ROUND_TIME_S;
       room.nextFakeHit = Date.now() + 2000;
-      room.nextFakeFlip = Date.now() + 6000;
+      room.nextFakeHeadon = Date.now() + 7000;
       broadcastLobby(room);
     }
   };
   room.timers.push(setTimeout(step, 1000));
 }
 
-function aliveTeams(room) {
-  const teams = new Set();
-  for (const car of room.cars.values()) {
-    if (car.s === CAR_STATE.DEAD) continue;
-    const p = room.players.get(car.id);
-    if (p) teams.add(p.team);
-  }
-  return teams;
+function aliveCars(room) {
+  return [...room.cars.values()].filter(c => c.s !== CAR_STATE.DEAD);
 }
 
 function endRound(room) {
   room.state = ROOM_STATE.ROUND_END;
-  const teams = aliveTeams(room);
-  let winnerTeam = null;
-  if (teams.size === 1) {
-    winnerTeam = [...teams][0];
-  } else if (teams.size > 1) {
-    const hpByTeam = new Map();
-    for (const car of room.cars.values()) {
-      const p = room.players.get(car.id);
-      if (!p || car.s === CAR_STATE.DEAD) continue;
-      hpByTeam.set(p.team, (hpByTeam.get(p.team) || 0) + car.hp);
-    }
-    winnerTeam = [...hpByTeam.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-  }
+  const alive = aliveCars(room);
+  let winnerId = null;
+  if (alive.length === 1) winnerId = alive[0].id;
+  else if (alive.length > 1) winnerId = alive.sort((a, b) => b.hp - a.hp)[0].id;
 
   const leaderboard = [...room.players.values()].map(p => ({
     id: p.id,
     name: p.name,
     kills: p.kills,
-    survived: Math.round(p.survived),
-    score: p.kills * CONFIG.SCORE_KILL
-      + Math.round(p.survived) * CONFIG.SCORE_PER_SECOND
-      + (p.team === winnerTeam ? CONFIG.SCORE_WIN : 0),
+    damage: Math.round(p.damage),
+    score: Math.round(liveScore(p) + (p.id === winnerId ? CONFIG.SCORE_WIN : 0)),
   })).sort((a, b) => b.score - a.score);
 
-  io.to(room.code).emit(S2C.ROUND_END, { winnerTeam, leaderboard });
+  io.to(room.code).emit(S2C.ROUND_END, { winnerId, leaderboard });
 
   room.timers.push(setTimeout(() => {
-    if (room.devRoom && room.code === 'TEST') {
-      startCountdown(room);          // TEST room loops forever
+    if (room.code === 'TEST') {
+      startCountdown(room); // TEST room loops forever
     } else {
       room.state = ROOM_STATE.LOBBY;
       room.cars.clear();
@@ -240,7 +229,98 @@ function endRound(room) {
 }
 
 // ---------------------------------------------------------------------------
-// Fake simulation
+// Damage, death, kill reward (same rules as design.md section 5)
+// ---------------------------------------------------------------------------
+
+function canTakeDamage(car, now) {
+  if (car.s === CAR_STATE.DEAD) return false;
+  if (now < car.invulnUntil) return false;
+  if (car.buff === BUFF.SHIELD && now < car.buffUntil) return false;
+  return true;
+}
+
+// Returns damage actually dealt.
+function applyDamage(room, victim, dmg, attackerId, now) {
+  if (!canTakeDamage(victim, now)) return 0;
+  const mult = victim.s === CAR_STATE.FLIPPED ? CONFIG.FLIPPED_DMG_MULT : 1;
+  const dealt = Math.min(victim.hp, Math.round(dmg * mult));
+  victim.hp -= dealt;
+  if (attackerId && attackerId !== victim.id) {
+    victim.lastAttacker = attackerId;
+    victim.lastHitAt = now;
+    const ap = room.players.get(attackerId);
+    if (ap) ap.damage += dealt;
+  }
+  return dealt;
+}
+
+function checkDeath(room, car, now) {
+  if (car.hp > 0 || car.s === CAR_STATE.DEAD) return;
+  car.hp = 0;
+  car.s = CAR_STATE.DEAD;
+  car.speed = 0;
+
+  const creditOk = car.lastAttacker && now - car.lastHitAt <= CONFIG.KILL_CREDIT_MS;
+  const killerId = creditOk ? car.lastAttacker : null;
+  const killer = killerId && room.players.get(killerId);
+  const killerCar = killerId && room.cars.get(killerId);
+  let heal = 0;
+  let buff = BUFF.NONE;
+  if (killer) killer.kills += 1;
+  if (killerCar && killerCar.s !== CAR_STATE.DEAD) {
+    heal = Math.min(killerCar.maxHp - killerCar.hp, Math.round(killerCar.maxHp * CONFIG.KILL_HEAL_FRAC));
+    killerCar.hp += heal;
+    buff = CONFIG.KILL_BUFF === 'shield' ? BUFF.SHIELD : BUFF.BOOST;
+    killerCar.buff = buff;
+    killerCar.buffUntil = now + CONFIG.BUFF_MS;
+  }
+  room.events.push({ type: EVENT.KILL, attacker: killerId, victim: car.id, heal, buff });
+}
+
+// ---------------------------------------------------------------------------
+// Fake car-to-car events (real version comes from Planck contacts)
+// ---------------------------------------------------------------------------
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function fakeEvents(room, now) {
+  const alive = aliveCars(room);
+  if (alive.length < 2) return;
+
+  if (now >= room.nextFakeHit) {
+    const a = pick(alive);
+    const v = pick(alive.filter(c => c.id !== a.id));
+    const kind = Math.random() < 0.4 ? HIT_KIND.REAR : HIT_KIND.SIDE;
+    const base = 10 + Math.random() * 20;
+    const dmg = applyDamage(room, v, kind === HIT_KIND.REAR ? base * (1 + CONFIG.REAR_BONUS) : base, a.id, now);
+    applyDamage(room, a, dmg * CONFIG.ATTACKER_RECOIL, null, now);
+    if (dmg > 0) room.events.push({ type: EVENT.HIT, attacker: a.id, victim: v.id, dmg, kind });
+    checkDeath(room, v, now);
+    checkDeath(room, a, now);
+    room.nextFakeHit = now + 2500 + Math.random() * 2500;
+  }
+
+  if (now >= room.nextFakeHeadon) {
+    const upright = alive.filter(c => c.s === CAR_STATE.ALIVE);
+    if (upright.length >= 2) {
+      const a = pick(upright);
+      const b = pick(upright.filter(c => c.id !== a.id));
+      const base = 6 + Math.random() * 10;
+      const dmgA = applyDamage(room, a, base, b.id, now);
+      const dmgB = applyDamage(room, b, base, a.id, now);
+      for (const c of [a, b]) {
+        if (c.s === CAR_STATE.ALIVE) { c.s = CAR_STATE.STUNNED; c.stunUntil = now + CONFIG.CONCUSSION_MS; }
+      }
+      room.events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg: Math.max(dmgA, dmgB), stunMs: CONFIG.CONCUSSION_MS });
+      checkDeath(room, a, now);
+      checkDeath(room, b, now);
+    }
+    room.nextFakeHeadon = now + 9000 + Math.random() * 6000;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Kinematic driving (real input handling, fake physics)
 // ---------------------------------------------------------------------------
 
 function wrapAngle(a) {
@@ -249,120 +329,76 @@ function wrapAngle(a) {
   return a;
 }
 
-function damage(room, attackerId, victim, dmg) {
-  const now = Date.now();
-  if (victim.parry) {
-    room.events.push({ type: EVENT.PARRY, id: victim.id, attacker: attackerId });
-    const attacker = room.cars.get(attackerId);
-    if (attacker && attacker.s !== CAR_STATE.DEAD) {
-      attacker.hp -= dmg * CONFIG.PARRY_REFLECT;
-      checkDeath(room, attacker, victim.id);
-    }
-    return;
-  }
-  const mult = victim.s === CAR_STATE.FLIPPED ? CONFIG.FLIPPED_DMG_MULT : 1;
-  const dealt = Math.round(dmg * mult);
-  victim.hp -= dealt;
-  room.events.push({ type: EVENT.HIT, attacker: attackerId, victim: victim.id, dmg: dealt });
-  checkDeath(room, victim, attackerId);
-  void now;
-}
-
-function checkDeath(room, car, killerId) {
-  if (car.hp > 0 || car.s === CAR_STATE.DEAD) return;
-  car.hp = 0;
-  car.s = CAR_STATE.DEAD;
-  car.speed = 0;
-  const killer = killerId && room.players.get(killerId);
-  if (killer) killer.kills += 1;
-  room.events.push({ type: EVENT.KILL, attacker: killer ? killerId : null, victim: car.id });
-}
-
-function fakeEvents(room, now) {
-  const alive = [...room.cars.values()].filter(c => c.s !== CAR_STATE.DEAD);
-  if (alive.length < 2) return;
-
-  if (now >= room.nextFakeHit) {
-    const a = alive[Math.floor(Math.random() * alive.length)];
-    const others = alive.filter(c => c.id !== a.id);
-    const v = others[Math.floor(Math.random() * others.length)];
-    damage(room, a.id, v, 8 + Math.random() * 22);
-    room.nextFakeHit = now + 2500 + Math.random() * 2500;
-  }
-
-  if (now >= room.nextFakeFlip) {
-    const upright = alive.filter(c => c.s === CAR_STATE.ALIVE);
-    if (upright.length) {
-      const c = upright[Math.floor(Math.random() * upright.length)];
-      c.s = CAR_STATE.FLIPPED;
-      c.taps = 0;
-      c.botRecoverAt = now + 2500;
-      room.events.push({ type: EVENT.FLIP, id: c.id });
-    }
-    room.nextFakeFlip = now + 8000 + Math.random() * 6000;
-  }
+function surfaceHit(room, car, impactSpeedUnits, now) {
+  const impact = impactSpeedUnits / SCALE; // m/s
+  if (impact < CONFIG.WALL_MIN_SPEED) return;
+  car.speed *= CONFIG.WALL_SPEED_KEEP;
+  const dmg = applyDamage(room, car, CONFIG.WALL_DMG_K * impact * impact, null, now);
+  room.events.push({ type: EVENT.WALL, id: car.id, dmg });
+  checkDeath(room, car, now); // credits lastAttacker if within KILL_CREDIT_MS
 }
 
 function stepCar(room, car, p, dt, now) {
-  const spec = CARS[p.car] || CARS[DEFAULT_CAR];
-  const maxV = spec.maxSpeed * SCALE;
+  const spec = CARS[DEFAULT_CAR];
+  const boosted = car.buff === BUFF.BOOST && now < car.buffUntil;
+  if (now >= car.buffUntil) car.buff = BUFF.NONE;
+  const maxV = spec.maxSpeed * SCALE * (boosted ? CONFIG.BOOST_SPEED_MULT : 1);
   const minV = CONFIG.MIN_SPEED * SCALE;
-  const input = p.isBot
-    ? { tilt: 0.45 * p.botDir, accel: true, taps: 0 }
-    : p.input;
+  const engine = CONFIG.ENGINE * SCALE * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1);
+  const input = p.isBot ? { tilt: 0.45 * p.botDir, accel: true, taps: 0 } : p.input;
+  const taps = input.taps;
+  if (!p.isBot) input.taps = 0; // taps are consumed every tick
 
-  // Flipped: slide to a stop, count recovery taps
-  if (car.s === CAR_STATE.FLIPPED) {
+  if (car.s === CAR_STATE.STUNNED) {
+    car.speed *= Math.exp(-CONFIG.COAST_DAMPING * dt);
+    if (now >= car.stunUntil) car.s = CAR_STATE.ALIVE;
+  } else if (car.s === CAR_STATE.FLIPPED) {
     car.speed *= Math.exp(-CONFIG.FLIPPED_DAMPING * dt);
-    if (p.isBot) {
-      if (now >= car.botRecoverAt) car.taps = CONFIG.RECOVER_TAPS;
-    } else {
-      car.taps += input.taps;
-      input.taps = 0;
-    }
+    car.taps += p.isBot ? (now >= car.botRecoverAt ? CONFIG.RECOVER_TAPS : 0) : taps;
     if (car.taps >= CONFIG.RECOVER_TAPS) {
       car.s = CAR_STATE.ALIVE;
       car.taps = 0;
+      car.invulnUntil = now + CONFIG.RECOVER_INVULN_MS;
       room.events.push({ type: EVENT.RECOVER, id: car.id });
     }
   } else {
-    // Parry on tap
-    if (CONFIG.PARRY_ENABLED && input.taps > 0 && now >= car.parryReadyAt) {
-      car.parryUntil = now + CONFIG.PARRY_WINDOW_MS;
-      car.parryReadyAt = now + CONFIG.PARRY_COOLDOWN_MS;
-    }
-    if (!p.isBot) input.taps = 0;
-    car.parry = now < car.parryUntil ? 1 : 0;
-
     // Throttle
     if (input.accel) {
-      car.speed = car.speed < minV ? minV : Math.min(maxV, car.speed + CONFIG.ENGINE * SCALE * dt);
+      car.speed = car.speed < minV ? minV : Math.min(maxV, car.speed + engine * dt);
     } else {
       car.speed *= Math.exp(-CONFIG.COAST_DAMPING * dt);
     }
-
     // Steering
     const grip = Math.min(1, car.speed / minV);
     car.a = wrapAngle(car.a + input.tilt * spec.turnRate * grip * dt);
+
+    // Tip-over: full speed + full steering held too long
+    const greedy = car.speed >= CONFIG.FLIP_SPEED_FRAC * spec.maxSpeed * SCALE
+      && Math.abs(input.tilt) >= CONFIG.FLIP_TILT;
+    car.flipHeldMs = greedy ? car.flipHeldMs + dt * 1000 : 0;
+    if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
+      car.s = CAR_STATE.FLIPPED;
+      car.taps = 0;
+      car.flipHeldMs = 0;
+      car.botRecoverAt = now + 2500;
+      room.events.push({ type: EVENT.FLIP, id: car.id });
+    }
   }
 
   // Move
   car.x += Math.cos(car.a) * car.speed * dt;
   car.y += Math.sin(car.a) * car.speed * dt;
 
-  // Walls: reflect and slow
+  // Walls: reflect, lose speed, self-damage
   const half = CAR_SIZE.W / 2;
-  let hitWall = false;
-  if (car.x < half) { car.x = half; car.a = wrapAngle(Math.PI - car.a); hitWall = true; }
-  if (car.x > ARENA.W - half) { car.x = ARENA.W - half; car.a = wrapAngle(Math.PI - car.a); hitWall = true; }
-  if (car.y < half) { car.y = half; car.a = wrapAngle(-car.a); hitWall = true; }
-  if (car.y > ARENA.H - half) { car.y = ARENA.H - half; car.a = wrapAngle(-car.a); hitWall = true; }
-  if (hitWall && car.speed > CONFIG.WALL_MIN_SPEED * SCALE) {
-    car.speed *= CONFIG.WALL_SPEED_KEEP;
-    room.events.push({ type: EVENT.WALL, id: car.id, dmg: 0 });
-  }
+  const vx = Math.cos(car.a) * car.speed;
+  const vy = Math.sin(car.a) * car.speed;
+  if (car.x < half) { car.x = half; car.a = wrapAngle(Math.PI - car.a); surfaceHit(room, car, Math.abs(vx), now); }
+  else if (car.x > ARENA.W - half) { car.x = ARENA.W - half; car.a = wrapAngle(Math.PI - car.a); surfaceHit(room, car, Math.abs(vx), now); }
+  if (car.y < half) { car.y = half; car.a = wrapAngle(-car.a); surfaceHit(room, car, Math.abs(vy), now); }
+  else if (car.y > ARENA.H - half) { car.y = ARENA.H - half; car.a = wrapAngle(-car.a); surfaceHit(room, car, Math.abs(vy), now); }
 
-  // Obstacles: push out and bounce
+  // Pillars: same penalty as walls
   for (const o of OBSTACLES) {
     const dx = car.x - o.x;
     const dy = car.y - o.y;
@@ -371,18 +407,17 @@ function stepCar(room, car, p, dt, now) {
       const nx = dx / dist, ny = dy / dist;
       car.x = o.x + nx * (o.r + half);
       car.y = o.y + ny * (o.r + half);
-      let vx = Math.cos(car.a), vy = Math.sin(car.a);
-      const dot = vx * nx + vy * ny;
+      let dxv = Math.cos(car.a), dyv = Math.sin(car.a);
+      const dot = dxv * nx + dyv * ny;
       if (dot < 0) {
-        vx -= 2 * dot * nx;
-        vy -= 2 * dot * ny;
-        car.a = Math.atan2(vy, vx);
-        car.speed *= 0.6;
+        const impact = -dot * car.speed;
+        dxv -= 2 * dot * nx;
+        dyv -= 2 * dot * ny;
+        car.a = Math.atan2(dyv, dxv);
+        surfaceHit(room, car, impact, now);
       }
     }
   }
-
-  if (car.s !== CAR_STATE.DEAD) p.survived += dt;
 }
 
 function tickRoom(room, dt, now) {
@@ -395,9 +430,9 @@ function tickRoom(room, dt, now) {
   fakeEvents(room, now);
   room.timeLeft -= dt;
 
-  const teams = aliveTeams(room);
-  const enoughToWin = room.players.size > 1;
-  if ((enoughToWin && teams.size <= 1) || room.timeLeft <= 0) endRound(room);
+  if (room.state !== ROOM_STATE.PLAYING) return;
+  const enough = room.players.size > 1;
+  if ((enough && aliveCars(room).length <= 1) || room.timeLeft <= 0) endRound(room);
 }
 
 setInterval(() => {
@@ -412,7 +447,10 @@ setInterval(() => {
     if (room.state !== ROOM_STATE.PLAYING && room.state !== ROOM_STATE.COUNTDOWN) continue;
     io.to(room.code).emit(S2C.SNAP, {
       t,
-      cars: [...room.cars.values()].map(packCar),
+      cars: [...room.cars.values()].map(c => {
+        const p = room.players.get(c.id);
+        return packCar({ ...c, sc: p ? liveScore(p) : 0 });
+      }),
       events: room.events.splice(0),
       timeLeft: Math.max(0, Math.ceil(room.timeLeft)),
     });
@@ -444,7 +482,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(code);
     if (!room) return reply(ack)({ error: 'Room not found' });
     if (room.players.size >= MAX_PLAYERS) return reply(ack)({ error: 'Room is full' });
-    const midRound = room.state === ROOM_STATE.PLAYING || room.state === ROOM_STATE.COUNTDOWN;
+    const midRound = room.state !== ROOM_STATE.LOBBY;
     if (midRound && !room.devRoom) return reply(ack)({ error: 'Round in progress' });
 
     const p = addPlayer(room, socket.id, msg.name);
@@ -461,31 +499,8 @@ io.on('connection', (socket) => {
     const room = rooms.get(code);
     if (!room) return reply(ack)({ error: 'Room not found' });
     socket.join(code);
-    socket.data.spectating = code;
     reply(ack)({ ok: true });
     socket.emit(S2C.LOBBY, lobbyState(room));
-  });
-
-  socket.on(C2S.SET_TEAM, (msg = {}) => {
-    const room = myRoom(); const p = room?.players.get(socket.id);
-    if (!p || room.state !== ROOM_STATE.LOBBY || room.mode === 'ffa') return;
-    p.team = Math.max(0, Math.min(1, Number(msg.team) || 0));
-    broadcastLobby(room);
-  });
-
-  socket.on(C2S.PICK_CAR, (msg = {}) => {
-    const room = myRoom(); const p = room?.players.get(socket.id);
-    if (!p || room.state !== ROOM_STATE.LOBBY || !CARS[msg.car]) return;
-    p.car = msg.car;
-    broadcastLobby(room);
-  });
-
-  socket.on(C2S.SET_MODE, (msg = {}) => {
-    const room = myRoom();
-    if (!room || room.hostId !== socket.id || !MODES.includes(msg.mode)) return;
-    room.mode = msg.mode;
-    reassignTeams(room);
-    broadcastLobby(room);
   });
 
   socket.on(C2S.READY, (msg = {}) => {
@@ -499,7 +514,7 @@ io.on('connection', (socket) => {
     const room = myRoom();
     if (!room || room.hostId !== socket.id) return reply(ack)({ error: 'Only the host can start' });
     if (room.state !== ROOM_STATE.LOBBY) return reply(ack)({ error: 'Already started' });
-    const min = room.devRoom ? CONFIG.DEV_MIN_PLAYERS : CONFIG.MIN_PLAYERS;
+    const min = room.devRoom ? CONFIG.DEV_MIN_PLAYERS : MIN_PLAYERS;
     if (room.players.size < min) return reply(ack)({ error: `Need at least ${min} players` });
     reply(ack)({ ok: true });
     startCountdown(room);
@@ -509,7 +524,7 @@ io.on('connection', (socket) => {
     const p = myRoom()?.players.get(socket.id);
     if (!p) return;
     const s = sanitizeInput(raw);
-    p.input = { ...s, taps: p.input.taps + s.taps }; // taps accumulate until the tick uses them
+    p.input = { ...s, taps: p.input.taps + s.taps }; // taps accumulate until a tick uses them
   });
 
   const leave = () => {

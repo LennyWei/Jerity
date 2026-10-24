@@ -1,7 +1,8 @@
 // shared/protocol.js
 // The contract between phones, server, and spectator.
-// Frozen after the first 45 minutes. Any change: ping the whole team first.
-// Imported by both /server and /client (ES modules; set "type": "module" in package.json).
+// MVP scope: FFA only, 4 to 8 players. Team modes, car picking, parry, and items are post-MVP.
+// Any change to this file: ping the whole team first.
+// Imported by both /server and /client (ES modules; "type": "module" in package.json).
 
 // ---------------------------------------------------------------------------
 // Event names (always use these constants, never raw strings)
@@ -12,11 +13,8 @@ export const C2S = {
   CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId } | { error }
   JOIN_ROOM:   'joinRoom',   // { code, name }             ack -> { playerId } | { error }
   SPECTATE:    'spectate',   // { code }                   ack -> { ok } | { error }
-  SET_TEAM:    'setTeam',    // { team }                   0..3, ignored in FFA
-  PICK_CAR:    'pickCar',    // { car }                    one of CARS keys
-  SET_MODE:    'setMode',    // { mode }                   host only
   READY:       'ready',      // { ready }
-  START:       'start',      // {}                         host only
+  START:       'start',      // {}                         host only, ack -> { ok } | { error }
   INPUT:       'input',      // { seq, tilt, accel, taps } 30 Hz while playing
   LEAVE:       'leave',      // {}
 };
@@ -34,8 +32,6 @@ export const S2C = {
 // Enums
 // ---------------------------------------------------------------------------
 
-export const MODES = ['ffa', '2v2', '3v3', '4v4'];
-
 export const ROOM_STATE = {
   LOBBY: 'lobby',
   COUNTDOWN: 'countdown',
@@ -44,15 +40,26 @@ export const ROOM_STATE = {
 };
 
 // Car state in snapshots (numbers keep snapshots small)
-export const CAR_STATE = { ALIVE: 0, FLIPPED: 1, DEAD: 2 };
+export const CAR_STATE = {
+  ALIVE: 0,    // full control
+  FLIPPED: 1,  // tipped over: no control until RECOVER_TAPS taps
+  DEAD: 2,
+  STUNNED: 3,  // concussed after a head-on hit: no control for CONCUSSION_MS
+};
+
+// Buff from getting a kill (snapshot field `buff`)
+export const BUFF = { NONE: 0, BOOST: 1, SHIELD: 2 };
+
+// Hit direction relative to the victim (event field `kind`)
+export const HIT_KIND = { SIDE: 'side', REAR: 'rear' };
 
 export const EVENT = {
-  HIT: 'hit',         // { attacker, victim, dmg }
-  WALL: 'wall',       // { id, dmg }
+  HIT: 'hit',         // { attacker, victim, dmg, kind }        nose into side or rear
+  HEADON: 'headon',   // { a, b, dmg, stunMs }                  both take dmg, both stunned
+  WALL: 'wall',       // { id, dmg }                            wall or obstacle self-damage
   FLIP: 'flip',       // { id }
   RECOVER: 'recover', // { id }
-  PARRY: 'parry',     // { id, attacker }
-  KILL: 'kill',       // { attacker | null, victim }
+  KILL: 'kill',       // { attacker | null, victim, heal, buff } heal = HP restored to attacker
 };
 
 // ---------------------------------------------------------------------------
@@ -64,23 +71,21 @@ export const EVENT = {
  * @property {number} seq             increments every send
  * @property {number} tilt            -1 (full left) .. 1 (full right), already calibrated
  * @property {boolean} accel          ACCEL button held
- * @property {number} taps            taps since the previous Input (NOT a boolean)
+ * @property {number} taps            taps since the previous Input (NOT a boolean); used to recover from a flip
  */
 
 /**
  * @typedef {Object} LobbyPlayer
  * @property {string} id
  * @property {string} name
- * @property {number} team            0..3 (FFA: unique per player)
- * @property {string} car             key of CARS
+ * @property {number} color           index into PLAYER_COLORS, unique in the room
  * @property {boolean} ready
  */
 
 /**
  * @typedef {Object} LobbyState
  * @property {string} code
- * @property {string} mode            one of MODES
- * @property {string} hostId
+ * @property {string|null} hostId
  * @property {string} state           one of ROOM_STATE
  * @property {LobbyPlayer[]} players
  */
@@ -93,8 +98,9 @@ export const EVENT = {
  * @property {number} a               angle in radians, 2 decimals (0 = facing +x)
  * @property {number} hp              integer
  * @property {number} s               CAR_STATE
- * @property {number} parry           1 while parry window is open, else 0
  * @property {number} taps            recovery taps so far (only meaningful when flipped)
+ * @property {number} buff            BUFF
+ * @property {number} sc              live score
  */
 
 /**
@@ -110,13 +116,13 @@ export const EVENT = {
  * @property {string} id
  * @property {string} name
  * @property {number} kills
- * @property {number} survived        seconds
+ * @property {number} damage          total damage dealt to other players
  * @property {number} score
  */
 
 /**
  * @typedef {Object} RoundEnd
- * @property {number|null} winnerTeam null on draw
+ * @property {string|null} winnerId    last car alive (or highest HP on timeout); null on draw
  * @property {LeaderRow[]} leaderboard sorted by score, highest first
  */
 
@@ -145,8 +151,9 @@ export function packCar(c) {
     a: Math.round(c.a * 100) / 100,
     hp: Math.max(0, Math.round(c.hp)),
     s: c.s,
-    parry: c.parry ? 1 : 0,
     taps: c.taps || 0,
+    buff: c.buff || 0,
+    sc: Math.round(c.sc || 0),
   };
 }
 
