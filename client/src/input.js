@@ -85,7 +85,9 @@ export function shapeSteer(angle, offset) {
   const s = ((angle - offset) / cfg('TILT_MAX_DEG', 25)) * sign;
   const m = Math.abs(s);
   if (m < dz) return 0;
-  return Math.sign(s) * Math.min(1, (m - dz) / (1 - dz));
+  // Response curve: small tilts give fine control, full lock is unchanged.
+  const lin = Math.min(1, (m - dz) / (1 - dz));
+  return Math.sign(s) * Math.pow(lin, cfg('TILT_EXPO', 1));
 }
 
 export function getTilt() {

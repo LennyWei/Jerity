@@ -64,6 +64,7 @@ export const CONFIG = {
   // where iPhones auto-rotate. (Replaces TILT_MAX_G, which needed 45-60 deg in practice.)
   TILT_MAX_DEG: 25,      // wheel angle that counts as full lock
   TILT_DEADZONE: 0.08,   // fraction of TILT_MAX_DEG (2 deg) that counts as straight
+  TILT_EXPO: 1.5,        // response curve: 10 deg -> 21% turn (was 35%), 25 deg still full lock
   TILT_SIGN_IOS: 1,      // set to -1 if tilting right steers left on iPhone (client/public/tilt-test.html)
   TILT_SIGN_ANDROID: 1,  // same check on Android
 

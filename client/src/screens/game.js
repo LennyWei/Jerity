@@ -184,10 +184,13 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   }
 
   /** 0..1: how close we are to tipping over (near max speed while steering near FLIP_TILT). */
+  // Same threshold the server uses: base top speed (boost doesn't move it).
+  const FLIP_SPEED = CARS[DEFAULT_CAR].maxSpeed * (CONFIG.FLIP_SPEED_FRAC ?? 0.85);
+  const topSpeed = () => CARS[DEFAULT_CAR].maxSpeed * (lastMine?.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT ?? 1 : 1);
+
   function flipDanger(tilt) {
     if (myState !== CAR_STATE.ALIVE || !lastMine) return 0;
-    const boost = lastMine.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT ?? 1 : 1;
-    const flipSpeed = CARS[DEFAULT_CAR].maxSpeed * boost * (CONFIG.FLIP_SPEED_FRAC ?? 0.85);
+    const flipSpeed = FLIP_SPEED;
     const near = Math.min(mySpeed / flipSpeed, Math.abs(tilt) / (CONFIG.FLIP_TILT ?? 0.85));
     return near < 0.85 ? 0 : Math.min(1, 0.3 + (near - 0.85) / 0.15 * 0.7);
   }
@@ -270,6 +273,9 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     renderer.draw(view, now, {
       tilt: showTilt ? tilt : undefined,
       danger: showTilt ? flipDanger(tilt) : 0,
+      speed: showTilt && myState !== null ? mySpeed : undefined,
+      maxSpeed: topSpeed(),
+      flipSpeed: FLIP_SPEED,
       countdown: count,
       flip,
       banner: banner(),
