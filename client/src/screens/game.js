@@ -13,7 +13,9 @@
 //   });
 // URL flags: ?fx=low|off cuts effects, ?fps=1 shows the frame rate.
 
-import { S2C, CAR_STATE } from '../../../shared/protocol.js';
+import { S2C, CAR_STATE, BUFF } from '../../../shared/protocol.js';
+import { CONFIG } from '../../../shared/config.js';
+import { CARS, DEFAULT_CAR, SCALE } from '../../../shared/constants.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
 import * as input from '../input.js';
@@ -70,7 +72,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   el.className = 'bb-game';
   el.innerHTML = `
     <canvas></canvas>
-    <div class="bb-pad tap"><div class="lbl">TAP<small>parry · recover</small></div></div>
+    <div class="bb-pad tap"><div class="lbl">TAP<small>flip back</small></div></div>
     <div class="bb-pad accel"><div class="lbl">ACCEL<small>hold</small></div></div>
     <div class="bb-overlay motion"><div>Tilt steering needs motion access</div><button>Enable steering</button></div>
     <div class="bb-overlay rotate"><div class="phone"></div><div>Hold your phone sideways</div></div>
@@ -87,7 +89,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     showHud: true, fx: params.get('fx') || 'full', fps: params.get('fps') === '1',
   });
   renderer.setMe(playerId);
-  if (lobby) renderer.setPlayers(lobby.players, lobby.mode);
+  if (lobby) renderer.setPlayers(lobby.players);
   const interp = createInterp();
 
   let alive = true;           // screen mounted
@@ -95,6 +97,8 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   let goTimer = null;
   let myState = null;         // CAR_STATE of own car, null if not in the round
   let flipBase = null;        // input totals when we flipped
+  let mySpeed = 0;            // m/s, estimated from snapshot positions (for the flip warning)
+  let lastMine = null;
   let sending = false;
   let lastSnapAt = 0;
 
@@ -135,8 +139,9 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     listen(net, S2C.SNAP, (snap) => {
       lastSnapAt = performance.now();
       interp.push(snap, lastSnapAt);
+      trackSpeed(snap);
     }),
-    listen(net, S2C.LOBBY, (l) => renderer.setPlayers(l.players, l.mode)),
+    listen(net, S2C.LOBBY, (l) => renderer.setPlayers(l.players)),
     listen(net, S2C.ROUND_END, (res) => {
       stopSending();
       onRoundEnd?.(res);
@@ -168,6 +173,25 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   // Frame loop
   // ---------------------------------------------------------------------------
 
+  function trackSpeed(snap) {
+    const m = playerId && snap.cars.find((c) => c.id === playerId);
+    const t = typeof snap.t === 'number' ? snap.t : lastSnapAt;
+    if (m && lastMine && t > lastMine.t) {
+      const v = Math.hypot(m.x - lastMine.x, m.y - lastMine.y) / SCALE / ((t - lastMine.t) / 1000);
+      mySpeed += (v - mySpeed) * 0.5;
+    }
+    lastMine = m ? { x: m.x, y: m.y, t, buff: m.buff } : null;
+  }
+
+  /** 0..1: how close we are to tipping over (near max speed while steering near FLIP_TILT). */
+  function flipDanger(tilt) {
+    if (myState !== CAR_STATE.ALIVE || !lastMine) return 0;
+    const boost = lastMine.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT ?? 1 : 1;
+    const flipSpeed = CARS[DEFAULT_CAR].maxSpeed * boost * (CONFIG.FLIP_SPEED_FRAC ?? 0.85);
+    const near = Math.min(mySpeed / flipSpeed, Math.abs(tilt) / (CONFIG.FLIP_TILT ?? 0.85));
+    return near < 0.85 ? 0 : Math.min(1, 0.3 + (near - 0.85) / 0.15 * 0.7);
+  }
+
   function updateOwnState() {
     // Use the newest snapshot (not the delayed view) so the flip overlay reacts immediately.
     const snap = interp.latest();
@@ -177,7 +201,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
 
     if (myState === CAR_STATE.FLIPPED && prev !== CAR_STATE.FLIPPED) flipBase = input.totals();
     if (myState !== CAR_STATE.FLIPPED) flipBase = null;
-    input.setAlive(myState === CAR_STATE.ALIVE);
+    input.setFlipped(myState === CAR_STATE.FLIPPED);
 
     if (myState === CAR_STATE.DEAD) {
       el.classList.add('out');      // spectate the rest of the round
@@ -186,10 +210,9 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
 
     if (!flipBase) return null;
     const now = input.totals();
-    return {
-      taps: Math.max(mine.taps || 0, now.taps - flipBase.taps),
-      shakes: mine.shakes ?? now.shakes - flipBase.shakes,
-    };
+    // Server count is authoritative; local taps + shakes fill the gap until it catches up.
+    const local = now.taps - flipBase.taps + now.shakes - flipBase.shakes;
+    return { taps: Math.max(mine.taps || 0, local) };
   }
 
   function banner() {
@@ -242,8 +265,11 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     const view = interp.sample(now);
     renderer.addEvents(interp.takeEvents(), view);
     const flip = updateOwnState();
+    const showTilt = !!playerId && myState !== CAR_STATE.DEAD;
+    const tilt = input.getTilt();
     renderer.draw(view, now, {
-      tilt: playerId && myState !== CAR_STATE.DEAD ? input.getTilt() : undefined,
+      tilt: showTilt ? tilt : undefined,
+      danger: showTilt ? flipDanger(tilt) : 0,
       countdown: count,
       flip,
       banner: banner(),

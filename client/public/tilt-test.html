@@ -62,15 +62,14 @@
     <div>source: <span id="src">–</span></div>
   </div>
   <div class="card"><b>Gestures</b>
-    <div class="big">shakes <span id="shakes">0</span> · jerks <span id="jerks">0</span></div>
-    <div style="color:var(--dim)">Shake = recover from flip. Jerk = one sharp flick (parry).</div>
+    <div class="big">shakes <span id="shakes">0</span></div>
+    <div style="color:var(--dim)">While flipped, each shake counts as a recovery tap.</div>
   </div>
   <div class="card"><b>Tunables (copy into config.js)</b>
     <label>TILT_MAX_DEG <input type="number" id="maxg" value="25" step="1"></label>
     <label>TILT_DEADZONE <input type="number" id="dz" value="0.08" step="0.01"></label>
     <label>SHAKE_ACCEL <input type="number" id="shk" value="11" step="1"></label>
     <label>SHAKE_GAP_MS <input type="number" id="gap" value="100" step="10"></label>
-    <label>JERK_ACCEL <input type="number" id="jrk" value="18" step="1"></label>
   </div>
 </div>
 
@@ -80,8 +79,8 @@ const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 $('plat').textContent = isIOS ? 'iOS' : (/Android/.test(navigator.userAgent) ? 'Android' : 'other');
 
-let sign = 1, offset = 0, raw = 0, peak = 0, shakes = 0, jerks = 0, lastShake = 0, lastJerk = 0;
-let side = 1, hold = '–', shakeArmed = true, jerkArmed = true;
+let sign = 1, offset = 0, raw = 0, peak = 0, shakes = 0, lastShake = 0;
+let side = 1, hold = '–', shakeArmed = true;
 const grav = { x: 0, y: 0, z: 9.81 };
 const num = (id) => parseFloat($(id).value);
 const f = (v) => (v == null ? '–' : v.toFixed(2));
@@ -140,8 +139,7 @@ function onMotion(e) {
   const now = performance.now(), gap = num('gap');
   if (mag < num('shk') * 0.5) shakeArmed = true;
   if (shakeArmed && mag > num('shk') && now - lastShake >= gap) { shakeArmed = false; lastShake = now; $('shakes').textContent = ++shakes; }
-  if (mag < num('jrk') * 0.4) jerkArmed = true;
-  if (jerkArmed && mag > num('jrk') && now - lastJerk >= 400) { jerkArmed = false; lastJerk = now; $('jerks').textContent = ++jerks; }
+
 }
 
 $('start').onclick = async () => {
@@ -158,7 +156,7 @@ $('start').onclick = async () => {
 };
 $('cal').onclick = () => { offset = raw; $('off').textContent = offset.toFixed(1); };
 $('sign').onclick = () => { sign = -sign; $('sign').textContent = 'Sign: ' + (sign > 0 ? '+1' : '−1'); };
-$('reset').onclick = () => { shakes = jerks = 0; peak = 0; $('shakes').textContent = 0; $('jerks').textContent = 0; };
+$('reset').onclick = () => { shakes = 0; peak = 0; $('shakes').textContent = 0; };
 </script>
 </body>
 </html>

@@ -1,8 +1,10 @@
 <!doctype html>
 <!-- Person 2's stand-in harness: the game screen on an inline fake net, no server needed.
      Your car (white outline) is driven by your own tilt / ACCEL / TAP; 3 bots circle.
-     Every 12 s you get flipped so you can test shake recovery. Keys on a laptop:
-     arrows steer, Up = accel, Space = tap, S = shake. Flags: ?fx=low|off, ?fps=1 -->
+     Flip rule as in design.md: near max speed with |tilt| >= FLIP_TILT for FLIP_HOLD_MS.
+     Recover with RECOVER_TAPS taps (shakes count as taps while flipped).
+     Random hits, head-ons (stun), and kills (heal + buff) exercise every effect.
+     Laptop keys: arrows steer, Up = accel, Space = tap, S = shake. Flags: ?fx=low|off, ?fps=1 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -16,34 +18,38 @@
 <div id="start"><button>Tap to start</button></div>
 <script type="module">
 import { mount, requestMotionPermission } from './src/screens/game.js';
-import { C2S, S2C, CAR_STATE, EVENT } from '../shared/protocol.js';
-import { ARENA, CARS } from '../shared/constants.js';
+import { C2S, S2C, CAR_STATE, EVENT, BUFF, HIT_KIND } from '../shared/protocol.js';
+import { ARENA, CARS, DEFAULT_CAR, SCALE } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 
 // --- inline fake net: same on / emit shape as net.js -------------------------
 const handlers = {};
 const net = {
   on(ev, fn) { (handlers[ev] ||= new Set()).add(fn); return () => handlers[ev].delete(fn); },
-  emit(ev, payload) { if (ev === C2S.INPUT) lastInput = payload; },
+  emit(ev, payload) {
+    if (ev !== C2S.INPUT) return;
+    pendingTaps += payload.taps;          // taps are a count; accumulate until a tick uses them
+    lastInput = payload;
+  },
 };
 const send = (ev, data) => handlers[ev]?.forEach((fn) => fn(data));
 
 const ME = 'me';
-const players = [ME, 'b1', 'b2', 'b3'].map((id, i) =>
-  ({ id, name: i ? `Bot ${i}` : 'You', team: i, car: ['balanced', 'heavy', 'light', 'balanced'][i], ready: true }));
-const lobby = { code: 'DEV1', mode: 'ffa', hostId: ME, state: 'playing', players };
+const players = [ME, 'b1', 'b2', 'b3'].map((id, i) => ({ id, name: i ? `Bot ${i}` : 'You', color: i, ready: true }));
+const lobby = { code: 'DEV1', hostId: ME, state: 'playing', players };
+const car = CARS[DEFAULT_CAR];
 
-let lastInput = { tilt: 0, accel: false, taps: 0, shakes: 0 };
-let cars, roundStart, flipAt, rec;
+let lastInput = { tilt: 0, accel: false, taps: 0 };
+let pendingTaps = 0;
+let cars, roundStart, greedySince;
 
 function newRound() {
   cars = players.map((p, i) => {
     const ang = (i / players.length) * Math.PI * 2;
     return { id: p.id, x: 500 + Math.cos(ang) * 220, y: 300 + Math.sin(ang) * 220, a: ang + Math.PI,
-      v: 0, hp: CARS[p.car].hp, s: CAR_STATE.ALIVE, parry: 0, taps: 0, phase: ang };
+      v: 0, hp: car.hp, s: CAR_STATE.ALIVE, taps: 0, buff: BUFF.NONE, buffUntil: 0, stunUntil: 0, sc: 0, phase: ang };
   });
-  flipAt = performance.now() + 12000;
-  rec = { taps: 0, shakes: 0 };
+  greedySince = 0;
   let n = CONFIG.COUNTDOWN_S;
   send(S2C.COUNTDOWN, { seconds: n });
   const t = setInterval(() => {
@@ -52,56 +58,87 @@ function newRound() {
   }, 1000);
 }
 
+function damage(attacker, victim, dmg, events) {
+  victim.hp -= dmg;
+  attacker.sc += dmg * CONFIG.SCORE_PER_DAMAGE;
+  if (victim.hp > 0) return;
+  victim.hp = 0; victim.s = CAR_STATE.DEAD;
+  const heal = attacker.s !== CAR_STATE.DEAD ? Math.round(car.hp * CONFIG.KILL_HEAL_FRAC) : 0;
+  attacker.hp = Math.min(car.hp, attacker.hp + heal);
+  attacker.buff = BUFF.BOOST; attacker.buffUntil = performance.now() + CONFIG.BUFF_MS;
+  attacker.sc += CONFIG.SCORE_KILL;
+  events.push({ type: EVENT.KILL, attacker: attacker.id, victim: victim.id, heal, buff: BUFF.BOOST });
+}
+
 setInterval(() => {
   if (!roundStart) return;
   const now = performance.now(), dt = 0.05, events = [];
   const me = cars[0];
-  const inp = lastInput;
-  lastInput = { ...inp, taps: 0, shakes: 0, jerks: 0 };
+  const inp = lastInput, taps = pendingTaps;
+  pendingTaps = 0;
+  for (const c of cars) if (c.buff && now > c.buffUntil) c.buff = BUFF.NONE;
 
+  if (me.s === CAR_STATE.STUNNED && now > me.stunUntil) me.s = CAR_STATE.ALIVE;
   if (me.s === CAR_STATE.ALIVE) {
-    me.v = inp.accel ? Math.min(14, Math.max(4, me.v + 6 * dt)) : me.v * 0.94;
-    me.a += inp.tilt * 3.2 * dt * Math.min(1, me.v / 4) ;
-    me.parry = inp.taps > 0 || inp.jerks > 0 ? 1 : 0;
-    if (now > flipAt) { me.s = CAR_STATE.FLIPPED; me.v = 0; rec = { taps: 0, shakes: 0 }; events.push({ type: EVENT.FLIP, id: ME }); }
-  } else if (me.s === CAR_STATE.FLIPPED) {
-    rec.taps += inp.taps; rec.shakes += inp.shakes || 0;
-    me.taps = rec.taps;
-    if (rec.taps >= CONFIG.RECOVER_TAPS || rec.shakes >= (CONFIG.RECOVER_SHAKES ?? 12)) {
-      me.s = CAR_STATE.ALIVE; me.taps = 0; flipAt = now + 12000; events.push({ type: EVENT.RECOVER, id: ME });
+    const max = car.maxSpeed * (me.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT : 1);
+    me.v = inp.accel ? Math.min(max, Math.max(CONFIG.MIN_SPEED, me.v + CONFIG.ENGINE * dt)) : me.v * 0.94;
+    me.a += inp.tilt * car.turnRate * dt * Math.min(1, me.v / CONFIG.MIN_SPEED);
+    // design.md 5.3: greedy driving tips you over
+    const greedy = me.v >= car.maxSpeed * CONFIG.FLIP_SPEED_FRAC && Math.abs(inp.tilt) >= CONFIG.FLIP_TILT;
+    greedySince = greedy ? greedySince || now : 0;
+    if (greedySince && now - greedySince >= CONFIG.FLIP_HOLD_MS) {
+      me.s = CAR_STATE.FLIPPED; me.v = 0; me.taps = 0; greedySince = 0;
+      events.push({ type: EVENT.FLIP, id: ME });
     }
-  }
-  me.x += Math.cos(me.a) * me.v * 20 * dt;
-  me.y += Math.sin(me.a) * me.v * 20 * dt;
+  } else if (me.s === CAR_STATE.FLIPPED) {
+    me.taps += taps;
+    if (me.taps >= CONFIG.RECOVER_TAPS) { me.s = CAR_STATE.ALIVE; me.taps = 0; events.push({ type: EVENT.RECOVER, id: ME }); }
+  } else me.v *= 0.9;
+  me.x += Math.cos(me.a) * me.v * SCALE * dt;
+  me.y += Math.sin(me.a) * me.v * SCALE * dt;
   if (me.x < 20 || me.x > ARENA.W - 20 || me.y < 20 || me.y > ARENA.H - 20) {
     me.x = Math.max(20, Math.min(ARENA.W - 20, me.x)); me.y = Math.max(20, Math.min(ARENA.H - 20, me.y));
-    if (me.v > 3) events.push({ type: EVENT.WALL, id: ME, dmg: 0 });
-    me.v *= 0.35;
+    if (me.v > CONFIG.WALL_MIN_SPEED && me.s !== CAR_STATE.DEAD) {
+      const dmg = Math.round(CONFIG.WALL_DMG_K * me.v * me.v);
+      me.hp = Math.max(1, me.hp - dmg);
+      events.push({ type: EVENT.WALL, id: ME, dmg });
+    }
+    me.v *= CONFIG.WALL_SPEED_KEEP;
   }
 
   for (const c of cars.slice(1)) {
     if (c.s === CAR_STATE.DEAD) continue;
-    c.phase += 0.6 * dt;
+    if (c.s === CAR_STATE.STUNNED && now > c.stunUntil) c.s = CAR_STATE.ALIVE;
+    if (c.s === CAR_STATE.ALIVE) c.phase += 0.6 * dt;
     c.x = 500 + Math.cos(c.phase) * 240; c.y = 300 + Math.sin(c.phase) * 170;
     c.a = c.phase + Math.PI / 2;
   }
+  const alive = cars.filter((c) => c.s !== CAR_STATE.DEAD);
+  const pick = () => alive[(Math.random() * alive.length) | 0];
   if (Math.random() < 0.04) {
-    const alive = cars.filter((c) => c.s !== CAR_STATE.DEAD);
-    const v = alive[(Math.random() * alive.length) | 0], a = alive[(Math.random() * alive.length) | 0];
+    const v = pick(), a = pick();
     if (v && a && v !== a) {
-      const dmg = Math.round(5 + Math.random() * 30);
-      v.hp -= dmg;
-      events.push({ type: EVENT.HIT, attacker: a.id, victim: v.id, dmg });
-      if (v.hp <= 0) { v.hp = 0; v.s = CAR_STATE.DEAD; events.push({ type: EVENT.KILL, attacker: a.id, victim: v.id }); }
+      const kind = Math.random() < 0.3 ? HIT_KIND.REAR : HIT_KIND.SIDE;
+      const dmg = Math.round((5 + Math.random() * 25) * (kind === HIT_KIND.REAR ? 1.3 : 1));
+      events.push({ type: EVENT.HIT, attacker: a.id, victim: v.id, dmg, kind });
+      damage(a, v, dmg, events);
+    }
+  } else if (Math.random() < 0.008) {
+    const a = pick(), b = pick();
+    if (a && b && a !== b) {
+      const dmg = 8;
+      for (const c of [a, b]) { c.hp = Math.max(1, c.hp - dmg); if (c.s === CAR_STATE.ALIVE) { c.s = CAR_STATE.STUNNED; c.stunUntil = now + CONFIG.CONCUSSION_MS; } }
+      events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg, stunMs: CONFIG.CONCUSSION_MS });
     }
   }
 
-  const timeLeft = 45 - (now - roundStart) / 1000;
+  const timeLeft = 60 - (now - roundStart) / 1000;
   send(S2C.SNAP, { t: Date.now(), timeLeft, events,
-    cars: cars.map(({ id, x, y, a, hp, s, parry, taps }) => ({ id, x, y, a, hp, s, parry, taps })) });
-  if (timeLeft <= 0 || cars.filter((c) => c.s !== CAR_STATE.DEAD).length <= 1) {
+    cars: cars.map(({ id, x, y, a, hp, s, taps, buff, sc }) => ({ id, x, y, a, hp: Math.round(hp), s, taps, buff, sc: Math.round(sc) })) });
+  if (timeLeft <= 0 || alive.length <= 1) {
     roundStart = 0;
-    send(S2C.ROUND_END, { winnerTeam: null, leaderboard: [] });
+    const lb = [...cars].sort((p, q) => q.sc - p.sc);
+    send(S2C.ROUND_END, { winnerId: alive[0]?.id ?? null, leaderboard: lb.map((c) => ({ id: c.id, name: c.id, kills: 0, damage: 0, score: Math.round(c.sc) })) });
     setTimeout(newRound, 2000);
   }
 }, 50);

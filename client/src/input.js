@@ -1,5 +1,5 @@
 // client/src/input.js
-// Phone controls: gravity steering, ACCEL/TAP buttons, shake and jerk gestures.
+// Phone controls: gravity steering, ACCEL/TAP buttons, shake-to-recover.
 // Person 2 owns this file.
 //
 // Usage:
@@ -8,7 +8,10 @@
 //   startSending(net);                 // emits C2S.INPUT at INPUT_HZ
 //   calibrate();                       // lobby Recalibrate button, countdown
 //
-// Desktop fallback for dev: arrows / A,D steer, W or Up = accel, Space = tap, S = shake, J = jerk.
+// Desktop fallback for dev: arrows / A,D steer, W or Up = accel, Space = tap, S = shake.
+//
+// Flip recovery is taps (protocol). While flipped, each shake is also sent as a tap, so
+// shaking the phone works too without any server change.
 
 import { CONFIG } from '../../shared/config.js';
 import { C2S } from '../../shared/protocol.js';
@@ -31,13 +34,11 @@ const st = {
   accelPointers: new Set(),
   keyAccel: false,
   keySteer: 0,
-  taps: 0, shakes: 0, jerks: 0,         // since last sent input
-  totals: { taps: 0, shakes: 0, jerks: 0 }, // never reset; screens diff these
+  taps: 0, shakes: 0,                   // since last sent input
+  totals: { taps: 0, shakes: 0 },       // never reset; screens diff these
   lastShakeAt: 0,
-  lastJerkAt: 0,
   shakeArmed: true,      // re-armed once acceleration falls back, so one push counts once
-  jerkArmed: true,
-  alive: true,
+  flipped: false,
   seq: 0,
   sendTimer: null,
   calSamples: null,      // array while calibrating
@@ -144,14 +145,6 @@ export function detectGestures(mag, now) {
     st.lastShakeAt = now;
     count('shakes');
   }
-  // A jerk (parry) is one sharp flick, with a longer refractory window.
-  const jerkAt = cfg('JERK_ACCEL', 18);
-  if (mag < jerkAt * 0.4) st.jerkArmed = true;
-  if (st.alive && st.jerkArmed && mag > jerkAt && now - st.lastJerkAt >= 400) {
-    st.jerkArmed = false;
-    st.lastJerkAt = now;
-    count('jerks');
-  }
 }
 
 function count(kind) {
@@ -220,7 +213,7 @@ export function calibrate(durationMs = 400) {
 // ---------------------------------------------------------------------------
 
 /**
- * Hold accelEl to accelerate, tap tapEl to parry / recover. Returns an unbind function.
+ * Hold accelEl to accelerate, tap tapEl to recover from a flip. Returns an unbind function.
  * Both elements get class "down" while pressed, for feedback.
  */
 export function bindButtons(accelEl, tapEl) {
@@ -277,7 +270,6 @@ function onKey(e) {
   st.keyAccel = keysDown.has('arrowup') || keysDown.has('w');
   if (down && k === ' ') count('taps');
   if (down && k === 's') count('shakes');
-  if (down && k === 'j' && st.alive) count('jerks');
 }
 
 // ---------------------------------------------------------------------------
@@ -288,24 +280,22 @@ export function isAccel() {
   return st.accelPointers.size > 0 || st.keyAccel;
 }
 
-/** Build the next input message and reset the per-message counters. */
+/** Build the next input message ({ seq, tilt, accel, taps }) and reset the counters. */
 export function takeInput() {
   const msg = {
     seq: st.seq++,
     tilt: Math.round(getTilt() * 1000) / 1000,
     accel: isAccel(),
-    taps: st.taps,
-    shakes: st.shakes,
-    jerks: st.jerks,
+    taps: st.taps + (st.flipped ? st.shakes : 0),
   };
-  st.taps = 0; st.shakes = 0; st.jerks = 0;
+  st.taps = 0; st.shakes = 0;
   return msg;
 }
 
 export function startSending(net) {
   stopSending();
   listen();
-  st.taps = 0; st.shakes = 0; st.jerks = 0;
+  st.taps = 0; st.shakes = 0;
   st.sendTimer = setInterval(() => net.emit(C2S.INPUT, takeInput()),
     1000 / cfg('INPUT_HZ', 30));
 }
@@ -315,12 +305,12 @@ export function stopSending() {
   st.sendTimer = null;
 }
 
-/** Jerks only count while the car is alive (they mean parry). */
-export function setAlive(alive) {
-  st.alive = alive;
+/** While flipped, shakes are sent as recovery taps. */
+export function setFlipped(flipped) {
+  st.flipped = flipped;
 }
 
-/** fn(kind) runs on every tap / shake / jerk. Returns an unsubscribe function. */
+/** fn(kind) runs on every tap / shake. Returns an unsubscribe function. */
 export function onGesture(fn) {
   st.listeners.add(fn);
   return () => st.listeners.delete(fn);

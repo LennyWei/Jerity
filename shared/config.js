@@ -67,10 +67,8 @@ export const CONFIG = {
   TILT_SIGN_IOS: 1,      // set to -1 if tilting right steers left on iPhone (client/public/tilt-test.html)
   TILT_SIGN_ANDROID: 1,  // same check on Android
 
-  // Phone gestures (client detects, server rules). Values from a motion simulation:
-  // a light 4 Hz shake recovers in ~1.5 s; normal steering never triggers either one.
+  // Shake to recover: while flipped, the phone sends each shake as a tap (client only).
+  // From a motion simulation: a light 4 Hz shake recovers in ~1 s; steering never triggers it.
   SHAKE_ACCEL: 11,       // m/s^2 without gravity; one count per push
   SHAKE_GAP_MS: 100,
-  JERK_ACCEL: 18,        // parry flick
-  RECOVER_SHAKES: 12,    // shakes OR RECOVER_TAPS taps, whichever finishes first
 };

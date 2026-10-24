@@ -10,7 +10,7 @@
 <style>
   html, body { margin: 0; height: 100%; background: #0b0d12; }
   canvas { display: block; width: 100vw; height: 100vh; }
-  #src { position: fixed; left: 8px; top: 8px; color: #8b95aa; font: 12px system-ui, sans-serif; }
+  #src { position: fixed; left: 8px; bottom: 8px; color: #8b95aa; font: 12px system-ui, sans-serif; }
 </style>
 </head>
 <body>
@@ -18,37 +18,37 @@
 <div id="src"></div>
 <script type="module">
 import { createRenderer } from './src/render.js';
-import { EVENT } from '../shared/protocol.js';
+import { EVENT, BUFF, HIT_KIND } from '../shared/protocol.js';
 
 // Eager glob returns {} when the files don't exist yet, so this never breaks the page.
 const fixtures = import.meta.glob('../shared/fixtures/*.json', { eager: true, import: 'default' });
 const pick = (name) => fixtures[`../shared/fixtures/${name}`];
 
 const sampleLobby = {
-  code: 'ABCD', mode: 'ffa', hostId: 'p1', state: 'playing',
+  code: 'ABCD', hostId: 'p1', state: 'playing',
   players: [
-    { id: 'p1', name: 'Raj', team: 0, car: 'balanced', ready: true },
-    { id: 'p2', name: 'Tank', team: 1, car: 'heavy', ready: true },
-    { id: 'p3', name: 'Dart', team: 2, car: 'light', ready: true },
-    { id: 'p4', name: 'Bot', team: 3, car: 'balanced', ready: true },
+    { id: 'p1', name: 'Raj', color: 0, ready: true },
+    { id: 'p2', name: 'Kenny', color: 1, ready: true },
+    { id: 'p3', name: 'Matteo', color: 2, ready: true },
+    { id: 'p4', name: 'Bot', color: 3, ready: true },
   ],
 };
 const sampleSnap = {
   t: 0, timeLeft: 87, events: [],
   cars: [
-    { id: 'p1', x: 320, y: 300, a: 0, hp: 82, s: 0, parry: 0, taps: 0 },
-    { id: 'p2', x: 380, y: 290, a: 3.0, hp: 120, s: 0, parry: 1, taps: 0 },
-    { id: 'p3', x: 700, y: 180, a: 1.2, hp: 30, s: 1, parry: 0, taps: 4 },
-    { id: 'p4', x: 640, y: 470, a: -2.4, hp: 0, s: 2, parry: 0, taps: 0 },
+    { id: 'p1', x: 320, y: 300, a: 0, hp: 82, s: 0, taps: 0, buff: BUFF.BOOST, sc: 240 },
+    { id: 'p2', x: 380, y: 290, a: 3.0, hp: 60, s: 3, taps: 0, buff: BUFF.NONE, sc: 75 },
+    { id: 'p3', x: 700, y: 180, a: 1.2, hp: 30, s: 1, taps: 4, buff: BUFF.SHIELD, sc: 130 },
+    { id: 'p4', x: 640, y: 470, a: -2.4, hp: 0, s: 2, taps: 0, buff: BUFF.NONE, sc: 20 },
   ],
 };
 const sampleEvents = [
-  { type: EVENT.HIT, attacker: 'p1', victim: 'p2', dmg: 24 },
+  { type: EVENT.HIT, attacker: 'p1', victim: 'p2', dmg: 24, kind: HIT_KIND.REAR },
+  { type: EVENT.HEADON, a: 'p1', b: 'p2', dmg: 10, stunMs: 1500 },
   { type: EVENT.WALL, id: 'p3', dmg: 8 },
   { type: EVENT.FLIP, id: 'p3' },
   { type: EVENT.RECOVER, id: 'p3' },
-  { type: EVENT.PARRY, id: 'p2', attacker: 'p1' },
-  { type: EVENT.KILL, attacker: 'p1', victim: 'p4' },
+  { type: EVENT.KILL, attacker: 'p1', victim: 'p4', heal: 30, buff: BUFF.BOOST },
 ];
 
 const lobby = pick('lobby.json') || sampleLobby;
@@ -61,7 +61,7 @@ document.getElementById('src').textContent =
 const params = new URLSearchParams(location.search);
 const showHud = params.get('hud') !== '0';
 const r = createRenderer(document.querySelector('canvas'), { showHud, fps: params.get('fps') === '1' });
-r.setPlayers(lobby.players, lobby.mode);
+r.setPlayers(lobby.players);
 r.setMe(lobby.players[0]?.id);
 
 let fire = true;

@@ -1,17 +1,17 @@
 // client/src/render.js
 // Draws the arena, cars, HP bars, effects and (on phones) the HUD.
-// Shared with the spectator page: createRenderer(canvas, { showHud: false }).
-// Person 2 owns this file.
+// Shared with the spectator page: createRenderer(canvas, { showHud: false }) also draws
+// names, a live leaderboard from `sc`, and a kill feed. Person 2 owns this file.
 //
 //   const r = createRenderer(canvas, { showHud: true });
-//   r.setPlayers(lobby.players, lobby.mode);
+//   r.setPlayers(lobby.players);
 //   r.setMe(playerId);
 //   // each frame:
 //   r.addEvents(interp.takeEvents(), view);
-//   r.draw(view, performance.now(), { tilt, countdown, flip, banner });
+//   r.draw(view, performance.now(), { tilt, countdown, flip, banner, danger });
 
-import { ARENA, CAR_SIZE, OBSTACLES, CARS, TEAM_COLORS, PLAYER_COLORS } from '../../shared/constants.js';
-import { CAR_STATE, EVENT } from '../../shared/protocol.js';
+import { ARENA, CAR_SIZE, OBSTACLES, CARS, DEFAULT_CAR, PLAYER_COLORS } from '../../shared/constants.js';
+import { CAR_STATE, EVENT, BUFF, HIT_KIND } from '../../shared/protocol.js';
 import { CONFIG } from '../../shared/config.js';
 
 const FX_SCALE = { full: 1, low: 0.4, off: 0 };
@@ -20,6 +20,7 @@ const MAX_PARTICLES = 250;
 export function createRenderer(canvas, opts = {}) {
   const showHud = opts.showHud ?? true;
   const showNames = opts.names ?? !showHud;
+  const showBoard = opts.board ?? !showHud;
   let fx = FX_SCALE[opts.fx] ?? 1;
   const showFps = !!opts.fps;
   const ctx = canvas.getContext('2d');
@@ -34,8 +35,11 @@ export function createRenderer(canvas, opts = {}) {
   const rings = [];
   let shake = 0;
   let flash = 0;          // 0..1 red vignette on own damage
+  let flashWhite = 0;     // 0..1 full-screen white flash on a head-on
   let lastNow = 0;
   let fpsAvg = 60;
+  let banner = null;      // { text, color, life, max } big center message (KO, CONCUSSED)
+  const feed = [];        // kill feed for the spectator board: { text, life }
 
   // -------------------------------------------------------------------------
   // Layout
@@ -61,15 +65,18 @@ export function createRenderer(canvas, opts = {}) {
   // Players and colors
   // -------------------------------------------------------------------------
 
-  function setPlayers(list = [], mode = 'ffa') {
+  function setPlayers(list = []) {
     players = new Map();
     list.forEach((p, i) => {
-      const color = mode === 'ffa'
-        ? PLAYER_COLORS[i % PLAYER_COLORS.length]
-        : TEAM_COLORS[(p.team ?? 0) % TEAM_COLORS.length];
-      players.set(p.id, { name: p.name, color, maxHp: CARS[p.car]?.hp });
+      players.set(p.id, {
+        name: p.name,
+        color: PLAYER_COLORS[(p.color ?? i) % PLAYER_COLORS.length],
+        maxHp: CARS[p.car || DEFAULT_CAR]?.hp,
+      });
     });
   }
+
+  const nameOf = (id) => players.get(id)?.name || 'Bot';
 
   function colorOf(id) {
     const p = players.get(id);
@@ -100,20 +107,37 @@ export function createRenderer(canvas, opts = {}) {
           const v = pos.get(e.victim), a = pos.get(e.attacker);
           if (!v) break;
           const x = a ? (a.x + v.x) / 2 : v.x, y = a ? (a.y + v.y) / 2 : v.y;
-          const dmg = e.dmg || 0;
-          sparks(x, y, 6 + Math.min(24, dmg * 0.6), ['#fff3b0', '#ffd23f', '#ff9f43'], 260);
-          if (dmg >= 1) floatText(v.x, v.y - 20, `-${Math.round(dmg)}`, '#ff6b6b', 14 + Math.min(16, dmg * 0.4));
+          const dmg = e.dmg || 0, rear = e.kind === HIT_KIND.REAR;
+          sparks(x, y, (6 + Math.min(24, dmg * 0.6)) * (rear ? 1.6 : 1), ['#fff3b0', '#ffd23f', '#ff9f43'], rear ? 340 : 260);
+          if (dmg >= 1) floatText(v.x, v.y - 20, `-${Math.round(dmg)}`, rear ? '#ff3b3b' : '#ff6b6b', (14 + Math.min(16, dmg * 0.4)) * (rear ? 1.25 : 1));
           if (e.victim === me) hurt(3 + dmg * 0.4, 40 + dmg * 2);
           else if (e.attacker === me) shake = Math.max(shake, 2);
+          break;
+        }
+        case EVENT.HEADON: {
+          const a = pos.get(e.a), b = pos.get(e.b);
+          if (!a || !b) break;
+          const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
+          rings.push({ x, y, r0: 10, r1: 120, life: 0, max: 450, color: '#ffffff' });
+          sparks(x, y, 30, ['#ffffff', '#c8d6ff', '#ffd23f'], 360);
+          for (const c of [a, b]) {
+            if (e.dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 16);
+            floatText(c.x, c.y - 44, 'CONCUSSED', '#c8d6ff', 15);
+          }
+          if (e.a === me || e.b === me) {
+            hurt(10, 120);
+            flashWhite = 1;
+            showBanner('CONCUSSED', '#c8d6ff');
+          }
           break;
         }
         case EVENT.WALL: {
           const c = pos.get(e.id);
           if (!c) break;
-          sparks(c.x, c.y, 5, ['#9aa3b5', '#c8cfdc'], 120);
-          if (e.dmg > 0) {
-            floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 14);
-            if (e.id === me) hurt(4, 30);
+          sparks(c.x, c.y, 6, ['#9aa3b5', '#c8cfdc'], 120);
+          if (e.dmg >= 1) {
+            floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 13);
+            if (e.id === me) hurt(3, 30);
           }
           break;
         }
@@ -132,27 +156,27 @@ export function createRenderer(canvas, opts = {}) {
           floatText(c.x, c.y - 26, 'BACK!', '#5ce1a0', 15);
           break;
         }
-        case EVENT.PARRY: {
-          const c = pos.get(e.id);
-          if (!c) break;
-          rings.push({ x: c.x, y: c.y, r0: 24, r1: 90, life: 0, max: 350, color: '#4dd0e1' });
-          sparks(c.x, c.y, 14, ['#ffffff', '#4dd0e1'], 300);
-          floatText(c.x, c.y - 30, 'PARRY!', '#4dd0e1', 18);
-          if (e.id === me || e.attacker === me) shake = Math.max(shake, 5);
-          break;
-        }
         case EVENT.KILL: {
-          const c = pos.get(e.victim);
-          if (!c) break;
-          sparks(c.x, c.y, 40, ['#ffffff', '#ffd23f', '#ff5a5f', colorOf(e.victim)], 380);
-          rings.push({ x: c.x, y: c.y, r0: 10, r1: 110, life: 0, max: 500, color: '#ffffff' });
-          floatText(c.x, c.y - 30, 'KO', '#ffffff', 26);
-          if (e.victim === me) hurt(16, 200);
-          else if (e.attacker === me) floatText(c.x, c.y - 56, '+KO', '#ffd23f', 18);
+          const c = pos.get(e.victim), k = pos.get(e.attacker);
+          if (c) {
+            sparks(c.x, c.y, 40, ['#ffffff', '#ffd23f', '#ff5a5f', colorOf(e.victim)], 380);
+            rings.push({ x: c.x, y: c.y, r0: 10, r1: 110, life: 0, max: 500, color: '#ffffff' });
+            floatText(c.x, c.y - 30, 'KO', '#ffffff', 26);
+          }
+          if (k && e.heal >= 1) floatText(k.x, k.y - 44, `+${Math.round(e.heal)} HEAL`, '#5ce1a0', 16);
+          const buff = e.buff === BUFF.BOOST ? ' · BOOST' : e.buff === BUFF.SHIELD ? ' · SHIELD' : '';
+          if (e.victim === me) { hurt(16, 200); showBanner(e.attacker ? `KO'd by ${nameOf(e.attacker)}` : 'KO', '#ff5a5f'); }
+          else if (e.attacker === me) showBanner(`KO! +${Math.round(e.heal || 0)} HP${buff}`, '#ffd23f');
+          feed.unshift({ text: e.attacker ? `${nameOf(e.attacker)} KO'd ${nameOf(e.victim)}` : `${nameOf(e.victim)} crashed out`, life: 0 });
+          feed.length = Math.min(feed.length, 5);
           break;
         }
       }
     }
+  }
+
+  function showBanner(text, color) {
+    banner = { text, color, life: 0, max: 1600 };
   }
 
   function hurt(amount, vibrateMs) {
@@ -199,6 +223,9 @@ export function createRenderer(canvas, opts = {}) {
     shake *= Math.exp(-dt / 90);
     if (shake < 0.2) shake = 0;
     flash *= Math.exp(-dt / 220);
+    flashWhite *= Math.exp(-dt / 120);
+    if (banner && (banner.life += dt) >= banner.max) banner = null;
+    for (let i = feed.length - 1; i >= 0; i--) if ((feed[i].life += dt) > 8000) feed.splice(i, 1);
   }
 
   // -------------------------------------------------------------------------
@@ -234,7 +261,9 @@ export function createRenderer(canvas, opts = {}) {
     // Screen space (CSS pixels)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (flash > 0.02) drawFlash();
+    if (flashWhite > 0.02) { ctx.fillStyle = `rgba(255,255,255,${(flashWhite * 0.7).toFixed(3)})`; ctx.fillRect(0, 0, cssW, cssH); }
     if (showHud) drawHud(view, cars, hud, now);
+    if (showBoard) drawBoard(cars);
     if (showFps) {
       ctx.fillStyle = '#7f8aa3';
       ctx.font = '12px system-ui, sans-serif';
@@ -298,6 +327,14 @@ export function createRenderer(canvas, opts = {}) {
     ctx.translate(c.x, c.y);
     ctx.rotate(c.a);
 
+    if (c.buff === BUFF.BOOST && c.s !== CAR_STATE.DEAD) { // flame trail out the back
+      const len = 16 + Math.random() * 10;
+      ctx.fillStyle = '#ff9f43';
+      ctx.beginPath(); ctx.moveTo(-W / 2, -7); ctx.lineTo(-W / 2 - len, 0); ctx.lineTo(-W / 2, 7); ctx.fill();
+      ctx.fillStyle = '#fff3b0';
+      ctx.beginPath(); ctx.moveTo(-W / 2, -4); ctx.lineTo(-W / 2 - len * 0.55, 0); ctx.lineTo(-W / 2, 4); ctx.fill();
+    }
+
     if (c.s === CAR_STATE.DEAD) {
       ctx.globalAlpha = 0.35;
       ctx.fillStyle = '#3a3f4a';
@@ -352,14 +389,27 @@ export function createRenderer(canvas, opts = {}) {
     }
     ctx.restore();
 
-    if (c.parry) {
+    if (c.buff === BUFF.SHIELD && c.s !== CAR_STATE.DEAD) {
       ctx.save();
-      ctx.globalAlpha = 0.6 + Math.sin(now / 40) * 0.25;
+      ctx.globalAlpha = 0.6 + Math.sin(now / 80) * 0.2;
       ctx.lineWidth = 4;
       ctx.strokeStyle = '#4dd0e1';
       ctx.beginPath();
       ctx.arc(c.x, c.y, 32, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.restore();
+    }
+
+    if (c.s === CAR_STATE.STUNNED) { // spinning stars
+      ctx.save();
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffd23f';
+      for (let i = 0; i < 3; i++) {
+        const t = now / 220 + (i * Math.PI * 2) / 3;
+        ctx.fillText('★', c.x + Math.cos(t) * 20, c.y - 6 + Math.sin(t) * 8);
+      }
       ctx.restore();
     }
   }
@@ -424,6 +474,17 @@ export function createRenderer(canvas, opts = {}) {
 
   function drawHud(view, cars, hud, now) {
     ctx.textBaseline = 'middle';
+    const mine = cars.find((c) => c.id === me);
+
+    if (hud.danger > 0) { // close to the flip limit: red screen edge
+      const a = hud.danger * (0.45 + Math.sin(now / 60) * 0.2);
+      const g = ctx.createRadialGradient(cssW / 2, cssH / 2, Math.min(cssW, cssH) * 0.45,
+        cssW / 2, cssH / 2, Math.max(cssW, cssH) * 0.62);
+      g.addColorStop(0, 'rgba(255,40,40,0)');
+      g.addColorStop(1, `rgba(255,40,40,${a.toFixed(3)})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, cssW, cssH);
+    }
 
     if (view && typeof view.timeLeft === 'number') {
       const s = Math.max(0, Math.ceil(view.timeLeft));
@@ -433,25 +494,52 @@ export function createRenderer(canvas, opts = {}) {
       pill(cssW / 2, 48, `${left} left`, '#9aa3b5', 12);
     }
 
+    if (mine) { // own HP (top left) and score (top right)
+      const max = maxHpOf(mine), f = Math.max(0, Math.min(1, mine.hp / max));
+      const x = 14, y = 12, w = Math.min(150, cssW * 0.22), h = 14;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      roundRect(x - 4, y - 4, w + 8, h + 8, 8); ctx.fill();
+      ctx.fillStyle = f > 0.5 ? '#5ce1a0' : f > 0.25 ? '#ffd23f' : '#ff5a5f';
+      ctx.fillRect(x, y, w * f, h);
+      ctx.font = '800 12px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#0b0d12';
+      ctx.fillText(`${Math.max(0, Math.round(mine.hp))} HP`, x + 6, y + h / 2 + 1);
+      const sc = `${Math.round(mine.sc || 0)} pts`;
+      ctx.font = '700 15px system-ui, sans-serif';
+      pill(cssW - 14 - (ctx.measureText(sc).width + 18) / 2, 20, sc, '#ffd23f', 15);
+    }
+
     if (typeof hud.tilt === 'number') drawTiltMeter(hud.tilt);
 
     if (hud.banner) pill(cssW / 2, cssH - 64, hud.banner, '#e8ecf4', 15);
 
+    if (banner) {
+      const f = banner.life / banner.max;
+      ctx.globalAlpha = f < 0.8 ? 1 : 1 - (f - 0.8) / 0.2;
+      ctx.textAlign = 'center';
+      ctx.font = `900 ${Math.round(30 * (1 + 0.15 * (1 - Math.min(1, f * 6))))}px system-ui, sans-serif`;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.strokeText(banner.text, cssW / 2, cssH * 0.3);
+      ctx.fillStyle = banner.color;
+      ctx.fillText(banner.text, cssW / 2, cssH * 0.3);
+      ctx.globalAlpha = 1;
+    }
+
     if (hud.flip) {
-      const needShakes = CONFIG.RECOVER_SHAKES ?? 12;
-      const needTaps = CONFIG.RECOVER_TAPS ?? 10;
-      const prog = Math.min(1, Math.max(hud.flip.shakes / needShakes, hud.flip.taps / needTaps));
+      const need = CONFIG.RECOVER_TAPS ?? 8;
+      const prog = Math.min(1, hud.flip.taps / need);
       ctx.fillStyle = 'rgba(10,8,4,0.55)';
       ctx.fillRect(0, cssH / 2 - 62, cssW, 124);
       const pulse = 1 + Math.sin(now / 90) * 0.06;
       ctx.textAlign = 'center';
       ctx.font = `900 ${Math.round(34 * pulse)}px system-ui, sans-serif`;
       ctx.fillStyle = '#ff9f43';
-      ctx.fillText('FLIPPED! SHAKE!', cssW / 2, cssH / 2 - 22);
+      ctx.fillText('FLIPPED! TAP!', cssW / 2, cssH / 2 - 22);
       ctx.font = '600 15px system-ui, sans-serif';
       ctx.fillStyle = '#ffe2c2';
-      ctx.fillText(`shakes ${hud.flip.shakes}/${needShakes}  ·  or tap ${hud.flip.taps}/${needTaps}`,
-        cssW / 2, cssH / 2 + 12);
+      ctx.fillText(`${Math.min(hud.flip.taps, need)}/${need}  ·  shaking works too`, cssW / 2, cssH / 2 + 12);
       const bw = Math.min(320, cssW * 0.6), bx = (cssW - bw) / 2, by = cssH / 2 + 32;
       ctx.fillStyle = 'rgba(255,255,255,0.15)';
       ctx.fillRect(bx, by, bw, 10);
@@ -472,6 +560,48 @@ export function createRenderer(canvas, opts = {}) {
         cssW / 2, cssH / 2 + 50);
     }
     ctx.textBaseline = 'alphabetic';
+  }
+
+  /** Spectator: live leaderboard from `sc` (top right) and kill feed (top left). */
+  function drawBoard(cars) {
+    ctx.textBaseline = 'middle';
+    const rows = cars.map((c) => ({ c, sc: Math.round(c.sc || 0) })).sort((a, b) => b.sc - a.sc);
+    const w = 190, rh = 22, x = cssW - w - 12, y = 12;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(x, y, w, 28 + rows.length * rh, 10); ctx.fill();
+    ctx.font = '800 13px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#9aa3b5';
+    ctx.fillText('LEADERBOARD', x + 12, y + 15);
+    rows.forEach(({ c, sc }, i) => {
+      const ry = y + 28 + i * rh + rh / 2;
+      ctx.globalAlpha = c.s === CAR_STATE.DEAD ? 0.45 : 1;
+      ctx.fillStyle = colorOf(c.id);
+      ctx.fillRect(x + 12, ry - 5, 10, 10);
+      ctx.font = '600 13px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#e8ecf4';
+      ctx.fillText(nameOf(c.id).slice(0, 14), x + 30, ry);
+      ctx.textAlign = 'right';
+      ctx.fillText(String(sc), x + w - 12, ry);
+    });
+    ctx.globalAlpha = 1;
+    feed.forEach((f, i) => {
+      ctx.globalAlpha = f.life < 6500 ? 1 : 1 - (f.life - 6500) / 1500;
+      pillLeft(12, 24 + i * 28, f.text);
+    });
+    ctx.globalAlpha = 1;
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function pillLeft(x, cy, text) {
+    ctx.font = '700 13px system-ui, sans-serif';
+    const w = ctx.measureText(text).width + 20;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(x, cy - 11, w, 22, 11); ctx.fill();
+    ctx.fillStyle = '#e8ecf4';
+    ctx.textAlign = 'left';
+    ctx.fillText(text, x + 10, cy + 1);
   }
 
   function drawTiltMeter(tilt) {
