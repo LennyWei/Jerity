@@ -4,13 +4,16 @@
   "type": "module",
   "scripts": {
     "fake": "node server/fake.js",
-    "fake:client": "node server/fake-client.js"
+    "fake:client": "node server/fake-client.js",
+    "dev:client": "vite --config client/vite.config.js",
+    "build": "vite build --config client/vite.config.js"
   },
   "dependencies": {
     "express": "^4.21.0",
     "socket.io": "^4.8.0"
   },
   "devDependencies": {
-    "socket.io-client": "^4.8.0"
+    "socket.io-client": "^4.8.0",
+    "vite": "^8.3.5"
   }
 }
