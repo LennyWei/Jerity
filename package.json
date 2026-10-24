@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "sim": "node server/sim.js",
     "fake": "node server/fake.js",
     "fake:client": "node server/fake-client.js",
     "dev:client": "vite --config client/vite.config.js",
@@ -11,6 +14,7 @@
   },
   "dependencies": {
     "express": "^4.21.0",
+    "planck": "^1.4.2",
     "socket.io": "^4.8.0"
   },
   "devDependencies": {

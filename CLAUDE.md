@@ -29,16 +29,19 @@ Out until FFA is done: team modes (2v2/3v3/4v4), car picking, items/perks, parry
 
 ```
 npm install
-npm run fake          # fake server on :3000, room TEST always running with 3 bots
+npm run dev           # real server on :3000, restarts on file changes; room TEST always running with 3 bots
+npm start             # same without watching (what pm2 runs)
+npm run sim           # one headless round through game.js, no sockets; prints events
+npm run fake          # fake server on :3000 (same port: run one or the other)
 npm run fake:client   # headless player that joins TEST and logs everything
+npm run dev:client    # Vite client with HMR; proxies /socket.io to :3000
+npm run dev:phone     # same over HTTPS (self-signed) so phones allow motion sensors
+npm run build         # client -> client/dist, which the server serves
 ```
-(Add `npm run dev` / `npm start` for the real server once `server/index.js` exists.)
 
 Env vars: `PORT` (server, default 3000); `SERVER` and `CODE` (fake client, defaults `http://localhost:3000` and `TEST`). `/health` returns `{ ok, rooms }`.
 
-There is no test runner or linter; testing is the fake client plus checking by hand (see Testing).
-
-Planck is not in `package.json` yet: `npm install planck` before writing `game.js`.
+There is no test runner or linter; testing is `npm run sim`, the fake client, and checking by hand (see Testing).
 
 ## Layout
 
