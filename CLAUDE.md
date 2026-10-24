@@ -8,11 +8,10 @@ Bumper Brawl: a free-for-all bumper-car game for 4 to 8 players in the phone bro
 
 ## Who I am and what I own
 
-I am Person 1: **server and physics**. I own `server/index.js`, `server/rooms.js`, `server/game.js`, `server/bots.js`.
+I am Person 1: **server and physics**. I own `server/index.js`, `server/rooms.js`, `server/game.js`, `server/bots.js`, `server/sim.js`. Since Oct 24 I also own Person 3's part: `server/mechanics.js` and `shared/config.js` (tuning).
 
 Other people own (do not rewrite their files without asking me first):
 - Person 2: `client/src/input.js`, `render.js`, `interp.js`, game screen
-- Person 3: `server/mechanics.js`, `shared/config.js` (tuning)
 - Person 4: deployment, `deploy.sh`, lobby/home/results/spectate screens, art, pitch
 
 ## Deadline
@@ -75,7 +74,7 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
    - Driving per design.md section 4: lateral grip impulse, instant launch to `MIN_SPEED`, engine force to `maxSpeed`, `angularVelocity = tilt * turnRate * min(1, speed / MIN_SPEED)`, boost buff multipliers.
    - States: stunned (no input, coast), flipped (no input, heavy damping, count taps), dead (destroy body).
    - Collect contacts in `post-solve` into a queue with velocities and the world normal; apply after `step`, never inside the callback.
-3. **Hook in `mechanics.js` (Person 3):** call pure functions for car-car hits (head-on vs side/rear), wall/pillar hits, tip-over check, kill reward, scoring. If they are not ready, keep the equivalent logic from `fake.js` (`applyDamage`, `checkDeath`, `surfaceHit`, flip check) and swap later.
+3. **Hook in `mechanics.js` (mine now, was Person 3's):** call pure functions for car-car hits (head-on vs side/rear), wall/pillar hits, tip-over check, kill reward, scoring. If they are not ready, keep the equivalent logic from `fake.js` (`applyDamage`, `checkDeath`, `surfaceHit`, flip check) and swap later.
 4. **`bots.js`:** steer toward the nearest living car, accel on, tilt clamped below `FLIP_TILT` so bots never flip.
 5. **`index.js`:** Express serving `client/dist` + Socket.IO on one port; `/health` endpoint.
 

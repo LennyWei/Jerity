@@ -8,6 +8,7 @@ export const CAR_SIZE = { W: 40, H: 24 }; // world units, W along the car's forw
 
 export const MIN_PLAYERS = 4;
 export const MAX_PLAYERS = 8;
+export const NAME_MAX = 12; // longer player names are cut by the server
 
 // Static pillars (world units). Hitting one costs speed and a little HP, like a wall.
 export const OBSTACLES = [

@@ -1,5 +1,6 @@
 // shared/config.js
-// Every tunable number. Person 3 owns this file. Nobody hardcodes these elsewhere.
+// Every tunable number. Person 1 owns this file (took over tuning from Person 3).
+// Nobody hardcodes these elsewhere.
 // Speeds in m/s (Planck units), times in ms unless the name says S.
 
 export const CONFIG = {
@@ -14,6 +15,7 @@ export const CONFIG = {
   ENGINE: 6,             // forward accel per unit mass while ACCEL held
   GRIP: 0.9,             // fraction of sideways velocity removed per tick
   COAST_DAMPING: 1.2,    // linear damping when ACCEL released (also while stunned)
+  ANGULAR_DAMPING: 3,    // spin decay while nobody steers the car (stunned or flipped)
   CAR_RESTITUTION: 0.5,
 
   // Car-to-car damage (faster = more damage; nose into side/rear beats head-on)
@@ -21,6 +23,8 @@ export const CONFIG = {
   MIN_IMPACT_SPEED: 2,   // ignore bumps slower than this
   HIT_COOLDOWN_MS: 300,  // per pair, so one crunch counts once
   REAR_BONUS: 0.3,       // rear hits deal up to +30% over side hits
+  NOSE_MIN_FRAC: 0.3,    // hitting with your side instead of your nose still deals 30%
+  REAR_KIND_MIN: 0.5,    // how square from behind a hit must be to count as 'rear'
   ATTACKER_RECOIL: 0.1,  // attacker takes 10% of what it deals on a side/rear hit
   HEADON_THRESHOLD: 0.7, // both noses this aligned with the hit = head-on
   HEADON_MULT: 0.35,     // head-on: each car takes DMG_K * closingSpeed^2 * this
@@ -53,11 +57,16 @@ export const CONFIG = {
   // Rounds and scoring (FFA: last car alive wins)
   COUNTDOWN_S: 3,
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
+  RESULTS_MS: 5000,      // results screen, then back to the lobby (TEST room: next round)
   DEV_MIN_PLAYERS: 1,    // used when the room was created with bots
   DISCONNECT_GRACE_MS: 5000,
   SCORE_PER_DAMAGE: 1,   // 1 point per HP dealt to other players
   SCORE_KILL: 100,
   SCORE_WIN: 150,
+
+  // Server bots (testing alone and the TEST room)
+  BOT_TILT_MAX: 0.7,     // below FLIP_TILT, so bots never tip over
+  BOT_STEER_GAIN: 2,     // tilt per radian off target (full lock at 20 degrees off)
 
   // Phone tilt. Measured as a steering-wheel angle in the screen's plane, so it does
   // not depend on how far the phone is tilted back. Full lock well before the ~45 deg

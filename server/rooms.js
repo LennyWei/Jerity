@@ -8,16 +8,14 @@
 import {
   C2S, S2C, ROOM_STATE, sanitizeInput, CODE_ALPHABET, CODE_LENGTH,
 } from '../shared/protocol.js';
-import { MIN_PLAYERS, MAX_PLAYERS } from '../shared/constants.js';
+import { MIN_PLAYERS, MAX_PLAYERS, NAME_MAX } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { createGame, liveScore } from './game.js';
 import { botInput } from './bots.js';
 
-// Room-flow numbers that aren't in config.js yet (Person 3's file); move them there if wanted.
+// Server-only details, not tuning.
 const TEST_CODE = 'TEST';    // always running, rounds loop; join it to get a car immediately
 const TEST_BOTS = 3;
-const NAME_MAX = 12;
-const RESULTS_MS = 5000;     // results screen, then back to the lobby (TEST: next round)
 const MAX_CATCHUP_TICKS = 5; // after a stall (GC, laptop sleep), drop time instead of fast-forwarding
 
 const STEP_MS = 1000 / CONFIG.TICK_HZ;
@@ -144,7 +142,7 @@ export function createRooms(io) {
 
     io.to(room.code).emit(S2C.ROUND_END, { winnerId, leaderboard });
     broadcastLobby(room);
-    later(room, () => nextRound(room), RESULTS_MS);
+    later(room, () => nextRound(room), CONFIG.RESULTS_MS);
   }
 
   // After the results: TEST loops forever, other rooms go back to the lobby.
