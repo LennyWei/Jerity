@@ -1,0 +1,156 @@
+<!doctype html>
+<!-- Person 2's tilt test page. One file, no imports, so Person 4 can host it anywhere on HTTPS.
+     Open on an iPhone and an Android phone, hold landscape like a steering wheel, tilt RIGHT.
+     The "steer" bar should move right. If it moves left, that platform needs sign -1:
+     write TILT_SIGN_IOS / TILT_SIGN_ANDROID into shared/config.js. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Tilt Test</title>
+<style>
+  :root { --bg: #0b0d12; --fg: #e8ecf4; --dim: #8b95aa; --acc: #ffd23f; --ok: #5ce1a0; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 ui-monospace, Menlo, monospace;
+    padding: 12px 16px; touch-action: manipulation; }
+  h1 { font: 800 18px system-ui, sans-serif; margin: 0 0 8px; }
+  button { font: 700 15px system-ui, sans-serif; padding: 10px 14px; border-radius: 10px; border: 0;
+    background: var(--acc); color: #111; margin: 4px 6px 4px 0; }
+  button.alt { background: #2b3242; color: var(--fg); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 10px; }
+  .card { background: #151924; border-radius: 12px; padding: 10px 12px; }
+  .card b { color: var(--dim); font-weight: 600; display: block; margin-bottom: 4px; font-family: system-ui, sans-serif; }
+  .bar { position: relative; height: 22px; background: #252b3a; border-radius: 6px; margin: 8px 0 4px; overflow: hidden; }
+  .bar i { position: absolute; top: 0; bottom: 0; background: var(--acc); }
+  .bar::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #fff6; }
+  label { display: block; margin: 4px 0; color: var(--dim); }
+  input[type=number] { width: 70px; background: #0b0d12; color: var(--fg); border: 1px solid #333b4d; border-radius: 6px; padding: 3px 5px; font: inherit; }
+  .big { font-size: 22px; color: var(--ok); }
+</style>
+</head>
+<body>
+<h1>Bumper Brawl · tilt test</h1>
+<div>
+  <button id="start">Start motion</button>
+  <button id="cal" class="alt">Calibrate</button>
+  <button id="sign" class="alt">Sign: +1</button>
+  <button id="reset" class="alt">Reset counters</button>
+</div>
+<div id="status" style="color:var(--dim);margin-top:6px">Tap "Start motion". Needs HTTPS on iPhone.</div>
+
+<div class="grid">
+  <div class="card"><b>Steer output (−1 … 1)</b>
+    <div class="big" id="steer">0.000</div>
+    <div class="bar"><i id="steerBar"></i></div>
+    <div style="color:var(--dim)">Tilt right → bar moves right?</div>
+  </div>
+  <div class="card"><b>Orientation</b>
+    <div>screen.orientation.angle: <span id="soa">–</span></div>
+    <div>window.orientation: <span id="wo">–</span></div>
+    <div>used angle: <span id="ang">–</span></div>
+    <div>platform: <span id="plat">–</span></div>
+  </div>
+  <div class="card"><b>accelerationIncludingGravity (m/s²)</b>
+    <div>x <span id="gx">–</span></div><div>y <span id="gy">–</span></div><div>z <span id="gz">–</span></div>
+    <div>steering axis raw: <span id="raw">–</span></div>
+    <div>offset: <span id="off">0</span></div>
+  </div>
+  <div class="card"><b>acceleration without gravity</b>
+    <div>x <span id="ax">–</span></div><div>y <span id="ay">–</span></div><div>z <span id="az">–</span></div>
+    <div>|a| now <span id="mag">–</span> · peak <span id="peak">0</span></div>
+    <div>source: <span id="src">–</span></div>
+  </div>
+  <div class="card"><b>Gestures</b>
+    <div class="big">shakes <span id="shakes">0</span> · jerks <span id="jerks">0</span></div>
+    <div style="color:var(--dim)">Shake = recover from flip. Jerk = one sharp flick (parry).</div>
+  </div>
+  <div class="card"><b>Tunables (copy into config.js)</b>
+    <label>TILT_MAX_G <input type="number" id="maxg" value="6" step="0.5"></label>
+    <label>TILT_DEADZONE <input type="number" id="dz" value="0.08" step="0.01"></label>
+    <label>SHAKE_ACCEL <input type="number" id="shk" value="14" step="1"></label>
+    <label>SHAKE_GAP_MS <input type="number" id="gap" value="120" step="10"></label>
+    <label>JERK_ACCEL <input type="number" id="jrk" value="22" step="1"></label>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+$('plat').textContent = isIOS ? 'iOS' : (/Android/.test(navigator.userAgent) ? 'Android' : 'other');
+
+let sign = 1, offset = 0, raw = 0, peak = 0, shakes = 0, jerks = 0, lastShake = 0, lastJerk = 0;
+const grav = { x: 0, y: 0, z: 9.81 };
+const num = (id) => parseFloat($(id).value);
+const f = (v) => (v == null ? '–' : v.toFixed(2));
+
+// Same math as client/src/input.js
+function angle() {
+  let a = screen.orientation && screen.orientation.angle;
+  if (typeof a !== 'number') a = typeof window.orientation === 'number' ? window.orientation : 0;
+  return ((a % 360) + 360) % 360;
+}
+function axis(g, a) {
+  switch (Math.round(a / 90) % 4) {
+    case 1: return g.y;
+    case 2: return g.x;
+    case 3: return -g.y;
+    default: return -g.x;
+  }
+}
+function shape(r) {
+  const dz = num('dz');
+  const s = (r - offset) / num('maxg');
+  const m = Math.abs(s);
+  return m < dz ? 0 : Math.sign(s) * Math.min(1, (m - dz) / (1 - dz));
+}
+
+function onMotion(e) {
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x == null) return;
+  const a = angle();
+  raw = axis(g, a) * sign;
+  $('soa').textContent = screen.orientation ? screen.orientation.angle : 'missing';
+  $('wo').textContent = typeof window.orientation === 'number' ? window.orientation : 'missing';
+  $('ang').textContent = a;
+  $('gx').textContent = f(g.x); $('gy').textContent = f(g.y); $('gz').textContent = f(g.z);
+  $('raw').textContent = f(raw);
+
+  const s = shape(raw);
+  $('steer').textContent = s.toFixed(3);
+  const bar = $('steerBar');
+  bar.style.left = (50 + Math.min(0, s) * 50) + '%';
+  bar.style.width = Math.abs(s) * 50 + '%';
+
+  grav.x += (g.x - grav.x) * 0.1; grav.y += (g.y - grav.y) * 0.1; grav.z += (g.z - grav.z) * 0.1;
+  const la = e.acceleration;
+  const hasLin = la && la.x != null;
+  const lx = hasLin ? la.x : g.x - grav.x, ly = hasLin ? la.y : g.y - grav.y, lz = hasLin ? la.z : g.z - grav.z;
+  const mag = Math.hypot(lx, ly, lz);
+  peak = Math.max(peak, mag);
+  $('ax').textContent = f(lx); $('ay').textContent = f(ly); $('az').textContent = f(lz);
+  $('mag').textContent = f(mag); $('peak').textContent = f(peak);
+  $('src').textContent = hasLin ? 'event.acceleration' : 'low-pass fallback';
+
+  const now = performance.now(), gap = num('gap');
+  if (mag > num('shk') && now - lastShake >= gap) { lastShake = now; $('shakes').textContent = ++shakes; }
+  if (mag > num('jrk') && now - lastJerk >= gap * 3) { lastJerk = now; $('jerks').textContent = ++jerks; }
+}
+
+$('start').onclick = async () => {
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r !== 'granted') { $('status').textContent = 'Permission: ' + r; return; }
+    }
+    window.addEventListener('devicemotion', onMotion);
+    $('status').textContent = 'Listening. Rotate to landscape and tilt like a steering wheel.';
+  } catch (err) {
+    $('status').textContent = 'Error: ' + err.message + (location.protocol !== 'https:' ? ' (not HTTPS)' : '');
+  }
+};
+$('cal').onclick = () => { offset = raw; $('off').textContent = f(offset); };
+$('sign').onclick = () => { sign = -sign; $('sign').textContent = 'Sign: ' + (sign > 0 ? '+1' : '−1'); };
+$('reset').onclick = () => { shakes = jerks = 0; peak = 0; $('shakes').textContent = 0; $('jerks').textContent = 0; };
+</script>
+</body>
+</html>

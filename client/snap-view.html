@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Person 2's fixture viewer: draws shared/fixtures/snap.json with render.js, no network.
+     Until Person 4 pushes the fixtures, it draws an inline sample (4 cars, one flipped, one dead).
+     Tap / click to replay events.json effects. ?hud=0 previews the spectator look. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Snapshot Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d12; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #src { position: fixed; left: 8px; top: 8px; color: #8b95aa; font: 12px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<canvas></canvas>
+<div id="src"></div>
+<script type="module">
+import { createRenderer } from './src/render.js';
+import { EVENT } from '../shared/protocol.js';
+
+// Eager glob returns {} when the files don't exist yet, so this never breaks the page.
+const fixtures = import.meta.glob('../shared/fixtures/*.json', { eager: true, import: 'default' });
+const pick = (name) => fixtures[`../shared/fixtures/${name}`];
+
+const sampleLobby = {
+  code: 'ABCD', mode: 'ffa', hostId: 'p1', state: 'playing',
+  players: [
+    { id: 'p1', name: 'Raj', team: 0, car: 'balanced', ready: true },
+    { id: 'p2', name: 'Tank', team: 1, car: 'heavy', ready: true },
+    { id: 'p3', name: 'Dart', team: 2, car: 'light', ready: true },
+    { id: 'p4', name: 'Bot', team: 3, car: 'balanced', ready: true },
+  ],
+};
+const sampleSnap = {
+  t: 0, timeLeft: 87, events: [],
+  cars: [
+    { id: 'p1', x: 320, y: 300, a: 0, hp: 82, s: 0, parry: 0, taps: 0 },
+    { id: 'p2', x: 380, y: 290, a: 3.0, hp: 120, s: 0, parry: 1, taps: 0 },
+    { id: 'p3', x: 700, y: 180, a: 1.2, hp: 30, s: 1, parry: 0, taps: 4 },
+    { id: 'p4', x: 640, y: 470, a: -2.4, hp: 0, s: 2, parry: 0, taps: 0 },
+  ],
+};
+const sampleEvents = [
+  { type: EVENT.HIT, attacker: 'p1', victim: 'p2', dmg: 24 },
+  { type: EVENT.WALL, id: 'p3', dmg: 8 },
+  { type: EVENT.FLIP, id: 'p3' },
+  { type: EVENT.RECOVER, id: 'p3' },
+  { type: EVENT.PARRY, id: 'p2', attacker: 'p1' },
+  { type: EVENT.KILL, attacker: 'p1', victim: 'p4' },
+];
+
+const lobby = pick('lobby.json') || sampleLobby;
+const snap = pick('snap.json') || sampleSnap;
+const evData = pick('events.json');
+const events = Array.isArray(evData) ? evData : evData?.events || snap.events?.length && snap.events || sampleEvents;
+document.getElementById('src').textContent =
+  `snap: ${pick('snap.json') ? 'shared/fixtures/snap.json' : 'inline sample'} · tap to replay events`;
+
+const params = new URLSearchParams(location.search);
+const showHud = params.get('hud') !== '0';
+const r = createRenderer(document.querySelector('canvas'), { showHud, fps: params.get('fps') === '1' });
+r.setPlayers(lobby.players, lobby.mode);
+r.setMe(lobby.players[0]?.id);
+
+let fire = true;
+addEventListener('pointerdown', () => { fire = true; });
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (fire) { r.addEvents(events, snap); fire = false; }
+  const me = snap.cars.find((c) => c.id === lobby.players[0]?.id);
+  r.draw(snap, now, showHud ? {
+    tilt: Math.sin(now / 700) * 0.8,
+    flip: me?.s === 1 ? { taps: me.taps, shakes: 0 } : null,
+  } : {});
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
