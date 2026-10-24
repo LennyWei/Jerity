@@ -7,7 +7,7 @@ export const CONFIG = {
   TICK_HZ: 30,
   SNAP_HZ: 20,
   INPUT_HZ: 30,
-  INTERP_DELAY_MS: 100,
+  INTERP_DELAY_MS: 150,  // 3 snapshots at 20 Hz; 100 jittered (build plan fix, Person 2)
 
   // Driving
   MIN_SPEED: 4,          // instant launch speed when ACCEL is pressed
@@ -62,4 +62,6 @@ export const CONFIG = {
   // Phone tilt
   TILT_MAX_G: 6,         // m/s^2 on the steering axis that counts as full lock (~37 degrees)
   TILT_DEADZONE: 0.08,
+  TILT_SIGN_IOS: 1,      // set to -1 if tilting right steers left on iPhone (client/public/tilt-test.html)
+  TILT_SIGN_ANDROID: 1,  // same check on Android
 };
