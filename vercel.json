@@ -1,0 +1,7 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "client/dist",
+  "redirects": [
+    { "source": "/", "destination": "/game-dev.html", "permanent": false }
+  ]
+}
