@@ -33,6 +33,9 @@ export function createGame(players, mapId = DEFAULT_MAP) {
   const lastHitAt = new Map(); // car pair or "car|wall" -> sim time of the last hit that counted
   let now = 0;
   let timeLeft = CONFIG.ROUND_TIME_S;
+  let persuasionKillUsed = false;
+  let obstaclesOffUntil = 0;
+  const arenaObstacles = [];
   let lastSnapT = 0;
   let clockBase = Date.now(); // snapshot times are this + simulation time
 
@@ -46,6 +49,12 @@ export function createGame(players, mapId = DEFAULT_MAP) {
   /** inputs: Map id -> { tilt, accel, taps } for this tick. A car without one coasts. */
   function step(inputs, dt) {
     now += dt * 1000;
+    if (obstaclesOffUntil > 0 && now >= obstaclesOffUntil) {
+    for (const body of arenaObstacles) {
+    body.setActive(true);
+    }
+    obstaclesOffUntil = 0;
+  }
     for (const car of cars.values()) {
       if (car.body && car.s !== CAR_STATE.DISCONNECTED) drive(car, inputs.get(car.id) || NO_INPUT, dt);
     }
@@ -136,8 +145,13 @@ export function createGame(players, mapId = DEFAULT_MAP) {
     for (const o of obstacles) {
       // Bollards and tire stacks are circles; barriers are rotated boxes. All count as walls.
       const shape = o.kind === 'box' ? new Box(o.w / 2 / SCALE, o.h / 2 / SCALE) : new Circle(o.r / SCALE);
-      world.createBody({ position: Vec2(o.x / SCALE, o.y / SCALE), angle: o.a || 0 })
-        .createFixture(shape, { restitution: CONFIG.OBSTACLE_RESTITUTION });
+      const body = world.createBody({position: Vec2(o.x / SCALE, o.y / SCALE), angle: o.a || 0});
+
+body.createFixture(shape, {
+  restitution: CONFIG.OBSTACLE_RESTITUTION
+});
+
+arenaObstacles.push(body);
     }
 
     // Planck mixes restitution by taking the larger value, so a car (CAR_RESTITUTION) would
@@ -186,6 +200,9 @@ export function createGame(players, mapId = DEFAULT_MAP) {
       stunUntil: 0,
       knockUntil: 0,
       invulnUntil: 0,
+      slowUntil: 0,
+      reverseUntil: 0,
+      superUntil: 0,
       buff: BUFF.NONE,
       buffUntil: 0,
       lastAttacker: null,
@@ -223,168 +240,212 @@ export function createGame(players, mapId = DEFAULT_MAP) {
   // Driving (design.md section 4). Runs before world.step.
   // ---------------------------------------------------------------------------
 
-  function drive(car, input, dt) {
-    const b = car.body;
-    const spec = CARS[DEFAULT_CAR];
-    const boosted = car.buff === BUFF.BOOST && now < car.buffUntil;
-    if (now >= car.buffUntil) car.buff = BUFF.NONE;
+function drive(car, input, dt) {
+  const b = car.body;
+  const spec = CARS[DEFAULT_CAR];
 
-    if (car.s === CAR_STATE.STUNNED) {
-      b.setLinearDamping(CONFIG.COAST_DAMPING); // no control: coast, spin dies out
-      b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
-      if (now >= car.stunUntil) car.s = CAR_STATE.ALIVE;
-      return;
-    }
-    if (car.s === CAR_STATE.FLIPPED) {
-      b.setLinearDamping(CONFIG.FLIPPED_DAMPING); // no control: slide to a stop, count taps
-      b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
-      car.taps += input.taps;
-      if (car.taps >= CONFIG.RECOVER_TAPS) {
-        car.s = CAR_STATE.ALIVE;
-        car.taps = 0;
-        car.invulnUntil = now + CONFIG.RECOVER_INVULN_MS;
-        events.push({ type: EVENT.RECOVER, id: car.id });
-      }
-      return;
-    }
-    if (now < car.knockUntil) {
-      // Knocked back: no control at all (throttle, grip, steering) until the push and the small
-      // spin from knock() play out, so holding forward can't resist it.
-      b.setLinearDamping(CONFIG.DRIVE_MODE === 'omni' ? CONFIG.OMNI_COAST_DAMPING : CONFIG.COAST_DAMPING);
-      b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
-      car.flipHeldMs = 0;
-      return;
-    }
+  const boosted = car.buff === BUFF.BOOST && now < car.buffUntil;
+  const superBoost = now < car.superUntil;
+  const slowed = now < car.slowUntil;
 
-    if (CONFIG.DRIVE_MODE === 'omni') return driveOmni(car, input, dt, spec, boosted);
+  const speedMult = (superBoost ? 2 : boosted ? CONFIG.BOOST_SPEED_MULT : 1) * (slowed ? 0.5 : 1);
+  const engineMult = superBoost ? 2 : boosted ? CONFIG.BOOST_ENGINE_MULT : 1;
 
-    const mass = b.getMass();
-    const fwd = b.getWorldVector(Vec2(1, 0));
-    const right = b.getWorldVector(Vec2(0, 1));
-    const knocked = now < car.knockUntil; // just knocked back: no grip or throttle until it plays out
+  if (now >= car.buffUntil) car.buff = BUFF.NONE;
 
-    // Lateral grip: remove most sideways velocity so it drives like a car, not a puck.
-    if (!knocked) {
-      const lat = Vec2.dot(right, b.getLinearVelocity());
-      b.applyLinearImpulse(Vec2.mul(right, -lat * mass * CONFIG.GRIP), b.getWorldCenter());
-    }
-
-    // Throttle, -1..1 (phones tilt forward/back; bots and old clients send accel = full forward).
-    // Just knocked back: no throttle until the knock plays out.
-    // Forward: partial throttle cruises at that fraction of top speed. Instant launch to
-    // MIN_SPEED plus engine force in the same tick: a turning car's forward speed dips just
-    // under MIN_SPEED every tick, and with launch-or-engine it would be relaunched forever and
-    // never speed up.
-    // Back: brake while still rolling forward, then reverse up to REVERSE_MAX_SPEED.
-    const throttle = knocked ? 0 : Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0;
-    const fwdSpeed = Vec2.dot(fwd, b.getLinearVelocity());
-    const push = (accel) => b.applyForceToCenter(Vec2.mul(fwd, accel * mass));
-    if (throttle > 0) {
-      const target = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1) * throttle;
-      const launch = Math.min(CONFIG.MIN_SPEED, target);
-      b.setLinearDamping(fwdSpeed > target ? CONFIG.COAST_DAMPING : 0); // eased off: roll down to the new cruise speed
-      if (fwdSpeed < launch) {
-        b.applyLinearImpulse(Vec2.mul(fwd, (launch - fwdSpeed) * mass), b.getWorldCenter());
-      }
-      if (Math.max(fwdSpeed, launch) < target) {
-        push(CONFIG.ENGINE * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1));
-      }
-    } else if (throttle < 0) {
-      b.setLinearDamping(0);
-      if (fwdSpeed > 0.5) push(-CONFIG.BRAKE * -throttle);                                // braking
-      else if (fwdSpeed > -CONFIG.REVERSE_MAX_SPEED * -throttle) push(-CONFIG.REVERSE_ENGINE); // reversing
-    } else {
-      b.setLinearDamping(CONFIG.COAST_DAMPING);
-    }
-
-    // Steering: no spinning in place, full turn rate from MIN_SPEED up. Like a real car, the
-    // nose swings the other way in reverse, but only while you reverse: a car knocked backwards
-    // (off a wall) while you hold forward still steers the way you tilt, or every knock would
-    // undo the turn away from the wall. Planck would damp the turn rate during the step, so
-    // damping is off while the player steers.
-    const speed = b.getLinearVelocity().length();
-    const reversing = throttle < 0 && Vec2.dot(fwd, b.getLinearVelocity()) < 0;
-    b.setAngularDamping(0);
-    b.setAngularVelocity(input.tilt * spec.turnRate * Math.min(1, speed / CONFIG.MIN_SPEED) * (reversing ? -1 : 1));
-
-    // Tip-over: full speed + full steering held too long (design.md 5.3)
-    car.flipHeldMs = flipTick(car.flipHeldMs, speed, spec.maxSpeed, input.tilt, dt * 1000);
-    if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
-      car.s = CAR_STATE.FLIPPED;
-      car.taps = 0;
-      car.flipHeldMs = 0;
-      events.push({ type: EVENT.FLIP, id: car.id });
-    }
+  if (now < car.reverseUntil) {
+    const throttle = Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0;
+    input = { ...input, tilt: -(Number(input.tilt) || 0), throttle: -throttle };
   }
 
-  /**
-   * Omni driving: the phone's tilt is a direction on screen (tilt = right, throttle = forward,
-   * which is up the screen) and the car's velocity swings toward it at OMNI_ACCEL, so it still
-   * feels heavy. The nose turns to face the direction of travel, so side and rear hits keep
-   * working. Tip-over: at speed, yanking hard far off your current direction of travel.
-   */
-  function driveOmni(car, input, dt, spec, boosted) {
-    const b = car.body;
-    const mass = b.getMass();
-    const v = b.getLinearVelocity();
-    const knocked = now < car.knockUntil; // just knocked back: no control until it plays out
-    const wx = knocked ? 0 : Number(input.tilt) || 0;
-    const wy = knocked ? 0 : -(Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0); // forward = -y
-    const want = Math.min(1, Math.hypot(wx, wy));
-    const maxSpeed = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1);
-
-    if (want > 0) {
-      b.setLinearDamping(0);
-      const accel = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
-      const target = maxSpeed * want;
-      const s = v.length();
-      let nvx, nvy;
-      if (s < CONFIG.OMNI_ARC_MIN_SPEED) {
-        // Nearly still: no direction to swing yet, so push straight toward the target velocity.
-        const k = target / Math.hypot(wx, wy);
-        const dvx = wx * k - v.x, dvy = wy * k - v.y, dv = Math.hypot(dvx, dvy);
-        const f = dv > accel ? accel / dv : 1;
-        nvx = v.x + dvx * f; nvy = v.y + dvy * f;
-      } else {
-        // Moving: swing the direction of travel toward the tilt in an arc, keeping the speed, so a
-        // turn is a curve instead of braking and re-accelerating. Fast while far off, easing in.
-        const h = Math.atan2(v.y, v.x);
-        const d = Math.atan2(Math.sin(Math.atan2(wy, wx) - h), Math.cos(Math.atan2(wy, wx) - h));
-        const turn = Math.max(-CONFIG.OMNI_TURN_RATE, Math.min(CONFIG.OMNI_TURN_RATE, d * CONFIG.OMNI_TURN_GAIN)) * dt;
-        const ns = s + Math.max(-accel, Math.min(accel, target - s));
-        nvx = Math.cos(h + turn) * ns; nvy = Math.sin(h + turn) * ns;
-      }
-      b.applyLinearImpulse(Vec2((nvx - v.x) * mass, (nvy - v.y) * mass), b.getWorldCenter());
+  if (car.s === CAR_STATE.STUNNED) {
+    if (now >= car.stunUntil) {
+      car.s = CAR_STATE.ALIVE;
     } else {
-      b.setLinearDamping(CONFIG.OMNI_COAST_DAMPING); // no tilt (or knocked back): roll to a stop
-    }
-
-    // Nose follows the direction of travel (only once actually moving, so bumps don't spin it).
-    const vel = b.getLinearVelocity(), speed = vel.length();
-    b.setAngularDamping(0);
-    if (speed > 0.8) {
-      const diff = Math.atan2(Math.sin(Math.atan2(vel.y, vel.x) - b.getAngle()), Math.cos(Math.atan2(vel.y, vel.x) - b.getAngle()));
-      const maxTurn = spec.turnRate * 2;
-      b.setAngularVelocity(Math.max(-maxTurn, Math.min(maxTurn, diff * CONFIG.OMNI_FACE_GAIN)));
-    } else {
+      b.setLinearVelocity(Vec2(0, 0));
       b.setAngularVelocity(0);
-    }
-
-    // Tip-over: near top speed, demanding a direction far off where you are going.
-    const off = want > 0 && speed > 0
-      ? Math.acos(Math.max(-1, Math.min(1, (wx * vel.x + wy * vel.y) / (Math.hypot(wx, wy) * speed)))) * (180 / Math.PI)
-      : 0;
-    const greedy = speed >= CONFIG.OMNI_FLIP_SPEED_FRAC * spec.maxSpeed && want >= CONFIG.FLIP_TILT
-      && off >= CONFIG.OMNI_FLIP_ANGLE_DEG;
-    car.flipHeldMs = greedy ? car.flipHeldMs + dt * 1000 : 0;
-    if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
-      car.s = CAR_STATE.FLIPPED;
-      car.taps = 0;
-      car.flipHeldMs = 0;
-      events.push({ type: EVENT.FLIP, id: car.id });
+      b.setLinearDamping(CONFIG.COAST_DAMPING);
+      b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
+      return;
     }
   }
 
+  if (car.s === CAR_STATE.FLIPPED) {
+    b.setLinearDamping(CONFIG.FLIPPED_DAMPING);
+    b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
+    car.taps += input.taps;
+
+    if (car.taps >= CONFIG.RECOVER_TAPS) {
+      car.s = CAR_STATE.ALIVE;
+      car.taps = 0;
+      car.invulnUntil = now + CONFIG.RECOVER_INVULN_MS;
+      events.push({ type: EVENT.RECOVER, id: car.id });
+    }
+    return;
+  }
+
+  if (now < car.knockUntil) {
+    b.setLinearDamping(CONFIG.DRIVE_MODE === 'omni' ? CONFIG.OMNI_COAST_DAMPING : CONFIG.COAST_DAMPING);
+    b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
+    car.flipHeldMs = 0;
+    return;
+  }
+
+  if (CONFIG.DRIVE_MODE === 'omni') {
+    return driveOmni(car, input, dt, spec, speedMult, engineMult);
+  }
+
+  const mass = b.getMass();
+  const fwd = b.getWorldVector(Vec2(1, 0));
+  const right = b.getWorldVector(Vec2(0, 1));
+
+  const lat = Vec2.dot(right, b.getLinearVelocity());
+  b.applyLinearImpulse(Vec2.mul(right, -lat * mass * CONFIG.GRIP), b.getWorldCenter());
+
+  const throttle = Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0;
+  const fwdSpeed = Vec2.dot(fwd, b.getLinearVelocity());
+  const push = accel => b.applyForceToCenter(Vec2.mul(fwd, accel * mass));
+
+  if (throttle > 0) {
+    const target = spec.maxSpeed * speedMult * throttle;
+    const launch = Math.min(CONFIG.MIN_SPEED, target);
+
+    b.setLinearDamping(fwdSpeed > target ? CONFIG.COAST_DAMPING : 0);
+
+    if (fwdSpeed < launch) {
+      b.applyLinearImpulse(Vec2.mul(fwd, (launch - fwdSpeed) * mass), b.getWorldCenter());
+    }
+
+    if (Math.max(fwdSpeed, launch) < target) {
+      push(CONFIG.ENGINE * engineMult);
+    }
+  } else if (throttle < 0) {
+    b.setLinearDamping(0);
+
+    if (fwdSpeed > 0.5) {
+      push(-CONFIG.BRAKE * -throttle);
+    } else if (fwdSpeed > -CONFIG.REVERSE_MAX_SPEED * speedMult * -throttle) {
+      push(-CONFIG.REVERSE_ENGINE * engineMult);
+    }
+  } else {
+    b.setLinearDamping(CONFIG.COAST_DAMPING);
+  }
+
+  const speed = b.getLinearVelocity().length();
+  const reversing = throttle < 0 && Vec2.dot(fwd, b.getLinearVelocity()) < 0;
+
+  b.setAngularDamping(0);
+  b.setAngularVelocity(
+    input.tilt * spec.turnRate *
+    Math.min(1, speed / CONFIG.MIN_SPEED) *
+    (reversing ? -1 : 1)
+  );
+
+  car.flipHeldMs = flipTick(car.flipHeldMs, speed, spec.maxSpeed, input.tilt, dt * 1000);
+
+  if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
+    car.s = CAR_STATE.FLIPPED;
+    car.taps = 0;
+    car.flipHeldMs = 0;
+    events.push({ type: EVENT.FLIP, id: car.id });
+  }
+}
+
+function driveOmni(car, input, dt, spec, speedMult, engineMult) {
+  const b = car.body;
+  const mass = b.getMass();
+  const v = b.getLinearVelocity();
+
+  const wx = Number(input.tilt) || 0;
+  const wy = -(Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0);
+  const want = Math.min(1, Math.hypot(wx, wy));
+  const maxSpeed = spec.maxSpeed * speedMult;
+
+  if (want > 0) {
+    b.setLinearDamping(0);
+
+    const accel = CONFIG.OMNI_ACCEL * engineMult * dt;
+    const target = maxSpeed * want;
+    const s = v.length();
+
+    let nvx, nvy;
+
+    if (s < CONFIG.OMNI_ARC_MIN_SPEED) {
+      const k = target / Math.hypot(wx, wy);
+      const dvx = wx * k - v.x;
+      const dvy = wy * k - v.y;
+      const dv = Math.hypot(dvx, dvy);
+      const f = dv > accel ? accel / dv : 1;
+
+      nvx = v.x + dvx * f;
+      nvy = v.y + dvy * f;
+    } else {
+      const h = Math.atan2(v.y, v.x);
+      const d = Math.atan2(
+        Math.sin(Math.atan2(wy, wx) - h),
+        Math.cos(Math.atan2(wy, wx) - h)
+      );
+
+      const turn = Math.max(
+        -CONFIG.OMNI_TURN_RATE,
+        Math.min(CONFIG.OMNI_TURN_RATE, d * CONFIG.OMNI_TURN_GAIN)
+      ) * dt;
+
+      const ns = s + Math.max(-accel, Math.min(accel, target - s));
+
+      nvx = Math.cos(h + turn) * ns;
+      nvy = Math.sin(h + turn) * ns;
+    }
+
+    b.applyLinearImpulse(
+      Vec2((nvx - v.x) * mass, (nvy - v.y) * mass),
+      b.getWorldCenter()
+    );
+  } else {
+    b.setLinearDamping(CONFIG.OMNI_COAST_DAMPING);
+  }
+
+  const vel = b.getLinearVelocity();
+  const speed = vel.length();
+
+  b.setAngularDamping(0);
+
+  if (speed > 0.8) {
+    const diff = Math.atan2(
+      Math.sin(Math.atan2(vel.y, vel.x) - b.getAngle()),
+      Math.cos(Math.atan2(vel.y, vel.x) - b.getAngle())
+    );
+
+    const maxTurn = spec.turnRate * 2;
+    b.setAngularVelocity(
+      Math.max(-maxTurn, Math.min(maxTurn, diff * CONFIG.OMNI_FACE_GAIN))
+    );
+  } else {
+    b.setAngularVelocity(0);
+  }
+
+  const off = want > 0 && speed > 0
+    ? Math.acos(
+        Math.max(-1, Math.min(1,
+          (wx * vel.x + wy * vel.y) / (Math.hypot(wx, wy) * speed)
+        ))
+      ) * (180 / Math.PI)
+    : 0;
+
+  const greedy =
+    speed >= CONFIG.OMNI_FLIP_SPEED_FRAC * spec.maxSpeed &&
+    want >= CONFIG.FLIP_TILT &&
+    off >= CONFIG.OMNI_FLIP_ANGLE_DEG;
+
+  car.flipHeldMs = greedy ? car.flipHeldMs + dt * 1000 : 0;
+
+  if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
+    car.s = CAR_STATE.FLIPPED;
+    car.taps = 0;
+    car.flipHeldMs = 0;
+    events.push({ type: EVENT.FLIP, id: car.id });
+  }
+}
   // ---------------------------------------------------------------------------
   // Contacts (design.md 5.1 and 5.2), handled after world.step: damage can kill a car,
   // and a dead car's body is destroyed.
@@ -512,11 +573,131 @@ export function createGame(players, mapId = DEFAULT_MAP) {
     }
     events.push({ type: EVENT.KILL, attacker: killerId, victim: car.id, heal, buff });
   }
+  
+  // Apply an action chosen by Jerity
+  function applyJerityAction(ruling) {
+  if (!ruling || typeof ruling.action !== "string") return false;
 
-  return {
+  const action = ruling.action;
+  const car = cars.get(ruling.target);
+
+  const valid = c => c && c.body &&
+    c.s !== CAR_STATE.DEAD &&
+    c.s !== CAR_STATE.DISCONNECTED;
+
+  function move(c, x, y, angle) {
+    c.body.setTransform(Vec2(x / SCALE, y / SCALE), angle);
+    c.body.setLinearVelocity(Vec2(0, 0));
+    c.body.setAngularVelocity(0);
+    c.knockUntil = 0;
+    syncFromBody(c);
+  }
+
+  if (action === "remove_walls") {
+    for (const body of arenaObstacles) {
+      body.setActive(false);
+    }
+    obstaclesOffUntil = now + 5000;
+    return true;
+  }
+
+  if (action === "swap_all_positions") {
+    const active = [...cars.values()].filter(valid);
+    if (active.length < 2) return false;
+
+    const places = active.map(c => ({
+      x: c.x, y: c.y, a: c.a
+    }));
+
+    active.forEach((c, i) => {
+      const p = places[(i + 1) % places.length];
+      move(c, p.x, p.y, p.a);
+    });
+
+    return true;
+  }
+
+  if (!valid(car)) return false;
+
+  switch (action) {
+    case "freeze_player":
+      car.s = CAR_STATE.STUNNED;
+      car.stunUntil = now + 3000;
+      car.body.setLinearVelocity(Vec2(0, 0));
+      car.body.setAngularVelocity(0);
+      break;
+
+    case "heal_player":
+      car.hp = Math.min(car.maxHp, car.hp + 30);
+      break;
+
+    case "boost_player":
+      car.buff = BUFF.BOOST;
+      car.buffUntil = now + 5000;
+      break;
+
+    case "shield_player":
+      car.buff = BUFF.SHIELD;
+      car.buffUntil = now + 5000;
+      break;
+
+    case "damage_player":
+      applyDamage(car, 25, null);
+      checkDeath(car);
+      break;
+
+    case "execute_player":
+      if (timeLeft > CONFIG.ROUND_TIME_S / 4) return false;
+      car.hp = 0;
+      car.lastAttacker = null;
+      checkDeath(car);
+      break;
+
+    case "auto_kill":
+      if (persuasionKillUsed ||
+          !Number.isFinite(ruling.persuasionScore) ||
+          ruling.persuasionScore < 95) return false;
+
+      persuasionKillUsed = true;
+      car.hp = 0;
+      car.lastAttacker = null;
+      checkDeath(car);
+      break;
+
+    case "slow_player":
+      car.slowUntil = now + 5000;
+      break;
+
+    case "reverse_controls":
+      car.reverseUntil = now + 5000;
+      break;
+
+    case "super_boost":
+      car.superUntil = now + 5000;
+      break;
+
+    case "swap_positions":
+      const other = cars.get(ruling.target2);
+      if (!valid(other) || other.id === car.id) return false;
+
+      const old = { x: car.x, y: car.y, a: car.a };
+
+      move(car, other.x, other.y, other.a);
+      move(other, old.x, old.y, old.a);
+      break;
+
+    default:
+      return false;
+  }
+
+  return true;
+}
+
+    return {
     cars, stats,
     get now() { return now; },
-    step, snapshot, spawn, remove, setAway, over, winnerId,
+    step, snapshot, spawn, remove, setAway,
+    over, winnerId, applyJerityAction,
   };
 }
 
