@@ -13,7 +13,8 @@ export const CONFIG = {
   // Driving mode. 'omni': tilt the phone the way you want to go on screen (like a marble on a
   // tray); the car's nose turns to face where it is going. 'car': roll steers, tip drives.
   DRIVE_MODE: 'omni',
-  OMNI_ACCEL: 9,          // m/s^2: how fast the car's velocity swings to where you tilt (weight)
+  OMNI_ACCEL: 20,         // m/s^2: how fast the car's velocity swings to where you tilt: acceleration and grip in turns
+  OMNI_COAST_DAMPING: 3.5, // friction with the phone level: rolls to a stop instead of gliding (half speed every 0.2 s)
   OMNI_FACE_GAIN: 8,      // how quickly the nose turns to face the direction of travel
   OMNI_FLIP_ANGLE_DEG: 60, // omni tip-over: yanking at least this far off your direction of travel...
   OMNI_FLIP_SPEED_FRAC: 0.7, // ...while above this fraction of top speed (swinging bleeds speed, so lower than FLIP_SPEED_FRAC)
@@ -49,7 +50,8 @@ export const CONFIG = {
   // throttle and grip for a moment, so they separate instead of grinding or sliding along each other.
   KNOCKBACK_SPEED: 5,         // m/s apart for each car after a side or rear hit
   HEADON_KNOCKBACK_SPEED: 8,  // m/s apart after a head-on: far enough to steer past each other after the stun
-  KNOCKBACK_MS: 300,          // no throttle or grip for this long after a knockback (steering still works)
+  KNOCKBACK_MS: 900,          // no control at all (throttle, grip, steering) for this long after a knockback
+  KNOCKBACK_SPIN: 1.3,        // rad/s spin from a knockback; dies out at ANGULAR_DAMPING (about 25 deg in all)
 
   // Tip-over (greedy full speed + full steering)
   FLIP_SPEED_FRAC: 0.95, // at (nearly) full speed: at or above this fraction of max speed...
@@ -63,6 +65,7 @@ export const CONFIG = {
   WALL_RESTITUTION: 0.3,
   OBSTACLE_RESTITUTION: 0.8,
   WALL_MIN_SPEED: 5,     // slower touches are free (above the 4 m/s launch, so pressing on a wall costs nothing)
+  WALL_PRESS_MS: 1000,   // a bump this soon after the car's last wall bump is pressing against it, not a crash: no HP
   WALL_KNOCKBACK_SPEED: 2, // m/s off a wall or pillar after any bump of MIN_IMPACT_SPEED or more, so holding accel bounces instead of grinding
   WALL_SPEED_KEEP: 0.35, // keep 35% of speed after a hit
   WALL_DMG_K: 0.08,      // self-damage = WALL_DMG_K * impactSpeed^2 (about 16 HP at full speed)

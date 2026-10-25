@@ -12,12 +12,12 @@ export const NAME_MAX = 12; // longer player names are cut by the server
 
 // Static pillars (world units). Hitting one costs speed and a little HP, like a wall.
 // Four pillars in the gaps between the spawn lanes: the middle stays open for clashes, and the
-// straight drive from every spawn point to the center misses them (closest: 65 units, a corner lane).
+// straight drive from every spawn point to the center misses them (closest: 56 units, a corner lane; 55 is the limit, so they cannot go wider).
 export const OBSTACLES = [
-  { x: 350, y: 150, r: 32 },
-  { x: 650, y: 150, r: 32 },
-  { x: 350, y: 450, r: 32 },
-  { x: 650, y: 450, r: 32 },
+  { x: 330, y: 150, r: 32 },
+  { x: 670, y: 150, r: 32 },
+  { x: 330, y: 450, r: 32 },
+  { x: 670, y: 450, r: 32 },
 ];
 
 // Where cars start (world units), facing the center. Corners first, then the middle of each

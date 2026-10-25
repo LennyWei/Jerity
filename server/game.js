@@ -179,6 +179,7 @@ export function createGame(players) {
       buffUntil: 0,
       lastAttacker: null,
       lastHitAt: 0,
+      lastWallAt: -Infinity,    // last wall/pillar bump: another one soon after is pressing, not crashing
     };
     car.body = world.createBody({
       type: 'dynamic',
@@ -233,6 +234,14 @@ export function createGame(players) {
         car.invulnUntil = now + CONFIG.RECOVER_INVULN_MS;
         events.push({ type: EVENT.RECOVER, id: car.id });
       }
+      return;
+    }
+    if (now < car.knockUntil) {
+      // Knocked back: no control at all (throttle, grip, steering) until the push and the small
+      // spin from knock() play out, so holding forward can't resist it.
+      b.setLinearDamping(CONFIG.DRIVE_MODE === 'omni' ? CONFIG.OMNI_COAST_DAMPING : CONFIG.COAST_DAMPING);
+      b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
+      car.flipHeldMs = 0;
       return;
     }
 
@@ -321,7 +330,7 @@ export function createGame(players) {
       const s = dv > cap ? cap / dv : 1;
       b.applyLinearImpulse(Vec2(dvx * s * mass, dvy * s * mass), b.getWorldCenter());
     } else {
-      b.setLinearDamping(CONFIG.COAST_DAMPING); // no tilt: roll to a stop
+      b.setLinearDamping(CONFIG.OMNI_COAST_DAMPING); // no tilt (or knocked back): roll to a stop
     }
 
     // Nose follows the direction of travel (only once actually moving, so bumps don't spin it).
@@ -402,7 +411,9 @@ export function createGame(players) {
     const impact = Math.max(0, -Vec2.dot(a ? vA : vB, away));
     if (impact < CONFIG.MIN_IMPACT_SPEED || coolingDown(`${car.id}|wall`)) return;
     const hit = wallHit(impact); // a real crash: lose speed and some HP
-    if (hit) {
+    const pressing = now - car.lastWallAt < CONFIG.WALL_PRESS_MS; // holding it into the wall, bounce after bounce
+    car.lastWallAt = now;
+    if (hit && !pressing) {
       car.body.setLinearVelocity(Vec2.mul(car.body.getLinearVelocity(), hit.speedKeep));
       const dmg = applyDamage(car, hit.dmg, null);
       events.push({ type: EVENT.WALL, id: car.id, dmg });
@@ -411,14 +422,18 @@ export function createGame(players) {
     checkDeath(car); // credits lastAttacker if within KILL_CREDIT_MS
   }
 
-  // Sends a car away from what it hit (`away` is a unit vector) at `speed` or faster, and takes
-  // away its throttle and grip for KNOCKBACK_MS so the push plays out. Without it the instant
-  // launch drives it straight back in and grip cancels a sideways push: cars grind into walls and
-  // each other, slide along each other, and get hit again (head-ons: concussed again after the stun).
+  // Sends a car away from what it hit (`away` is a unit vector) at `speed` or faster with a small
+  // spin, and takes away all control for KNOCKBACK_MS (see drive) so the push plays out. Without
+  // it the instant launch drives it straight back in and grip cancels a sideways push: cars grind
+  // into walls and each other, slide along each other, and get hit again.
   function knock(car, away, speed) {
-    const v = car.body.getLinearVelocity();
+    const b = car.body;
+    const v = b.getLinearVelocity();
     const out = Vec2.dot(v, away);
-    car.body.setLinearVelocity(Vec2.add(v, Vec2.mul(away, Math.max(speed, out) - out))); // keep a faster bounce
+    b.setLinearVelocity(Vec2.add(v, Vec2.mul(away, Math.max(speed, out) - out))); // keep a faster bounce
+    // Spin the way the push turns the nose (which side it was hit from), so it ends up facing a bit off.
+    const fwd = b.getWorldVector(Vec2(1, 0));
+    b.setAngularVelocity((fwd.x * away.y - fwd.y * away.x >= 0 ? 1 : -1) * CONFIG.KNOCKBACK_SPIN);
     car.knockUntil = now + CONFIG.KNOCKBACK_MS;
   }
 
