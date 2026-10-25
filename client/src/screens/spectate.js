@@ -12,7 +12,7 @@ import { createInterp } from '../interp.js';
 import { mountVerity, corruption, resetCorruption, LINES } from '../verity-ui.js';
 import { connectJerity } from '../jerity-round.js';
 import { victorySplash } from './results.js';
-import { playEvents, playCountdown, playRoundEnd, audioReady, onAudioReady, onAudioLocked, unlockSfx } from '../sfx.js';
+import { playEvents, playDriving, stopDriving, playCountdown, playRoundEnd, audioReady, onAudioReady, onAudioLocked, unlockSfx } from '../sfx.js';
 
 export function mount(root, { net, code, onError }) {
   const canvas = h('canvas');
@@ -139,6 +139,7 @@ export function mount(root, { net, code, onError }) {
     const events = interp.takeEvents();
     renderer.addEvents(events, view);
     playEvents(events, { all: true, view }); // the big screen sounds every crash, panned by where it hit
+    playDriving(view, { all: true });        // and, under it, the hum of every car on the floor
     verity.react(events, { me: null, nameOf });
     renderer.draw(view, now);
     verity.watch(view, renderer.project, now);
@@ -148,6 +149,7 @@ export function mount(root, { net, code, onError }) {
 
   return () => {
     alive = false;
+    stopDriving();
     clearTimeout(splashTimer);
     offSound.forEach((off) => off());
     cancelAnimationFrame(raf);

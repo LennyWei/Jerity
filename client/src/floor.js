@@ -55,14 +55,14 @@ export function flickerSpots(map) {
   return Array.from({ length: 5 }, () => ({ x: 80 + rnd() * 840, y: 60 + rnd() * 480, r: 50 + rnd() * 70, phase: rnd() * 10 }));
 }
 
-export function paintFloor(ctx, { map = 'classic', pal, c = 0, px = 1 }) {
+export function paintFloor(ctx, { map = 'classic', pal, c = 0, px = 1, startLines: lines = true }) {
   const stage = c < 0.25 ? 0 : c < 0.5 ? 1 : c < 0.75 ? 2 : 3;
   ctx.save();
   ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip(); // the floor itself stays inside the rail
   (THEMES[map] || THEMES.classic)(ctx, pal, rng(seedOf(map)), c, px);
   meshShadow(ctx, map);
   emblem(ctx, pal, stage, map);
-  startLines(ctx, map);
+  if (lines) startLines(ctx, map); // off for artwork like the demo thumbnail
   wear(ctx, c, rng(seedOf(`${map}:wear`)));
   ctx.restore();
   rail(ctx, pal);
