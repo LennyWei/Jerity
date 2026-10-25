@@ -227,6 +227,14 @@ const sideDmg = v => CONFIG.DMG_K * v * v;                       // nose square 
     afterCrash !== null && car.hp === afterCrash, `crash left ${afterCrash} HP, now ${car.hp}`);
 }
 {
+  // Regression: rolling backwards off a wall (a knock) without reversing used to steer like
+  // reversing, swinging the nose back into the wall every bounce: bots stayed pinned forever.
+  const { game, cars: [car] } = setup({ x: 46, y: 15, v: -2 }); // facing the right wall, rolling back off it
+  run(game, [{ tilt: -CONFIG.BOT_TILT_MAX, accel: false, taps: 0 }], Math.round(0.5 / dt));
+  const turned = car.body.getAngle() * 180 / Math.PI; // negative = the way it tilts (left)
+  check(`rolling back off a wall, not reversing: steers the way you tilt (${turned.toFixed(0)} deg)`, turned < 0, `${turned} deg`);
+}
+{
   const { game, cars: [a, b], events } = crash({ x: 28.35, v: 5 }, { x: 30, a: NORTH }, { hpA: 70, hpB: 5 });
   const kill = events.find(e => e.type === EVENT.KILL);
   const wantBuff = CONFIG.KILL_BUFF === 'shield' ? BUFF.SHIELD : BUFF.BOOST;
@@ -314,8 +322,9 @@ console.log('\nBots');
   check(`a car coming straight at a bot: it swerves to flank (tilt ${dodge.toFixed(2)}) instead of a head-on`, dodge > 0, `${dodge}`);
 }
 
-console.log('\nOne bot round (wall hits counted, not printed)');
-{
+function botRound(mode) {
+  CONFIG.DRIVE_MODE = mode;
+  console.log(`\nOne bot round, ${mode} mode (wall hits counted, not printed)`);
   const bots = Array.from({ length: MIN_PLAYERS }, (_, i) => ({ id: `bot${i + 1}`, isBot: true }));
   const game = createGame(bots);
   const counts = {};
@@ -332,9 +341,66 @@ console.log('\nOne bot round (wall hits counted, not printed)');
     const st = game.stats.get(b.id);
     console.log(`  ${b.id}  hp ${car.hp}  state ${car.s}  at (${car.x.toFixed(0)}, ${car.y.toFixed(0)})  kills ${st.kills}  damage ${st.damage}`);
   }
-  check('bots find each other (car-to-car hits in the round)', (counts.hit || 0) + (counts.headon || 0) > 0, JSON.stringify(counts));
-  check('no bot flips', !counts.flip, JSON.stringify(counts));
+  check(`${mode}: bots find each other (car-to-car hits in the round)`, (counts.hit || 0) + (counts.headon || 0) > 0, JSON.stringify(counts));
+  check(`${mode}: no bot flips`, !counts.flip, JSON.stringify(counts));
 }
+botRound('car');
+
+// ---------------------------------------------------------------------------
+// Omni: the game's default DRIVE_MODE. The phone's tilt is a direction on screen.
+// ---------------------------------------------------------------------------
+
+console.log(`\nOmni driving (the default DRIVE_MODE)`);
+CONFIG.DRIVE_MODE = 'omni';
+const tiltTo = (x, y) => ({ tilt: x, throttle: -y, taps: 0 }); // a screen direction: +x right, +y down
+const angleOf = car => { const v = car.body.getLinearVelocity(); return Math.atan2(v.y, v.x); };
+const degBetween = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) * 180 / Math.PI;
+{
+  // Full tilt to the right from rest, with the nose starting out pointing up the screen.
+  const { game, cars: [car] } = setup({ x: 8, y: 15, a: -Math.PI / 2 });
+  const ticks = run(game, [tiltTo(1, 0)], 4 * CONFIG.TICK_HZ, () => speed(car) >= spec.maxSpeed - 0.1);
+  near('full tilt from rest: time to top speed', ticks * dt, spec.maxSpeed / CONFIG.OMNI_ACCEL, 0.1, 's');
+  near('...moving the way the phone tilts', degBetween(angleOf(car), 0), 0, 3, 'deg');
+  near('...nose turned to face where it goes', degBetween(car.body.getAngle(), angleOf(car)), 0, 10, 'deg');
+}
+{
+  // Half tilt up the screen (between the top pillars): cruise at half speed, heading up.
+  const { game, cars: [car] } = setup({ x: 25, y: 26 });
+  run(game, [tiltTo(0, -0.5)], 3 * CONFIG.TICK_HZ);
+  near('half tilt: cruise speed', speed(car), spec.maxSpeed / 2, 0.3, 'm/s');
+  near('...up the screen', degBetween(angleOf(car), -Math.PI / 2), 0, 3, 'deg');
+}
+{
+  const { game, cars: [car] } = setup({ x: 8, y: 15, v: spec.maxSpeed });
+  const half = run(game, [tiltTo(0, 0)], 4 * CONFIG.TICK_HZ, () => speed(car) <= spec.maxSpeed / 2);
+  near('no tilt: coasting to half speed', half * dt, Math.LN2 / CONFIG.COAST_DAMPING, 0.05, 's');
+}
+{
+  // At top speed going right, yank the phone the other way: tips over.
+  const { game, cars: [car] } = setup({ x: 8, y: 15, v: spec.maxSpeed });
+  const flipTick = run(game, [tiltTo(-1, 0)], CONFIG.TICK_HZ, () => game.snapshot().events.some(e => e.type === EVENT.FLIP));
+  check(`yanking the tilt the other way at top speed tips over (after ${(flipTick * dt).toFixed(2)} s)`,
+    car.s === CAR_STATE.FLIPPED, `state ${car.s}`);
+}
+{
+  // A 45 degree change of direction at top speed is just a turn.
+  const { game, cars: [car] } = setup({ x: 8, y: 15, v: spec.maxSpeed });
+  const events = [];
+  run(game, [tiltTo(Math.SQRT1_2, -Math.SQRT1_2)], CONFIG.TICK_HZ, () => { events.push(...game.snapshot().events); });
+  check('a 45 degree turn at top speed does not tip over', car.s === CAR_STATE.ALIVE && !events.some(e => e.type === EVENT.FLIP),
+    `state ${car.s}, ${JSON.stringify(events)}`);
+}
+{
+  // Holding the tilt into a wall: one crash, then it bounces off instead of grinding HP away.
+  const { game, cars: [car] } = setup({ x: 46, y: 15 }); // nose 3 m from the right wall
+  let afterCrash = null;
+  run(game, [tiltTo(1, 0)], 4 * CONFIG.TICK_HZ, () => {
+    if (afterCrash === null && game.snapshot().events.some(e => e.type === EVENT.WALL)) afterCrash = car.hp;
+  });
+  check(`holding the tilt into a wall for 4 s: no grinding (${afterCrash - car.hp} HP lost after the first crash)`,
+    afterCrash !== null && car.hp === afterCrash, `crash left ${afterCrash} HP, now ${car.hp}`);
+}
+botRound('omni');
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall checks passed');
 process.exit(failed ? 1 : 0);

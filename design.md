@@ -130,6 +130,12 @@ Events:
 - Car body: dynamic box 40 x 24 units, density from car stats, restitution 0.5.
 - Spawns: `SPAWN_POINTS` on the edges, corners first, then the middle of each edge (2 players: opposite corners; 4: all corners), facing the center. The drive from every spawn point to the middle misses the pillars.
 
+### Drive modes (`DRIVE_MODE` in `config.js`)
+- `'omni'` (default): the phone's tilt is a direction on screen (input `tilt` = right, `throttle` = up the screen). The car's velocity swings toward it at `OMNI_ACCEL` and the nose turns to face where it goes. No grip, no instant launch. Tip-over: at `OMNI_FLIP_SPEED_FRAC` of top speed, demanding a direction `OMNI_FLIP_ANGLE_DEG` or more off course for `FLIP_HOLD_MS`.
+- `'car'`: roll steers, tipping the phone forward/back is the throttle (partial throttle cruises; back brakes, then reverses). The tick loop below describes this mode. Steering swings the other way only while actually reversing, not while being knocked backwards.
+
+Both modes: stunned, flipped and knocked-back cars ignore input; damage, knockback and walls work the same.
+
 ### Tick loop (30 Hz, fixed timestep `dt = 1/30`)
 For each car:
 

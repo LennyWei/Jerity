@@ -257,12 +257,14 @@ export function createGame(players) {
     }
 
     // Steering: no spinning in place, full turn rate from MIN_SPEED up. Like a real car, the
-    // nose swings the other way in reverse. Planck would damp the turn rate during the step,
-    // so damping is off while the player steers.
+    // nose swings the other way in reverse, but only while you reverse: a car knocked backwards
+    // (off a wall) while you hold forward still steers the way you tilt, or every knock would
+    // undo the turn away from the wall. Planck would damp the turn rate during the step, so
+    // damping is off while the player steers.
     const speed = b.getLinearVelocity().length();
-    const roll = Vec2.dot(fwd, b.getLinearVelocity());
+    const reversing = throttle < 0 && Vec2.dot(fwd, b.getLinearVelocity()) < 0;
     b.setAngularDamping(0);
-    b.setAngularVelocity(input.tilt * spec.turnRate * Math.max(-1, Math.min(1, roll / CONFIG.MIN_SPEED)));
+    b.setAngularVelocity(input.tilt * spec.turnRate * Math.min(1, speed / CONFIG.MIN_SPEED) * (reversing ? -1 : 1));
 
     // Tip-over: full speed + full steering held too long (design.md 5.3)
     car.flipHeldMs = flipTick(car.flipHeldMs, speed, spec.maxSpeed, input.tilt, dt * 1000);
