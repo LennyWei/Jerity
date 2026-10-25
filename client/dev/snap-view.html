@@ -17,12 +17,12 @@
 <canvas></canvas>
 <div id="src"></div>
 <script type="module">
-import { createRenderer } from './src/render.js';
-import { EVENT, BUFF, HIT_KIND } from '../shared/protocol.js';
+import { createRenderer } from '../src/render.js';
+import { EVENT, BUFF, HIT_KIND } from '../../shared/protocol.js';
 
 // Eager glob returns {} when the files don't exist yet, so this never breaks the page.
-const fixtures = import.meta.glob('../shared/fixtures/*.json', { eager: true, import: 'default' });
-const pick = (name) => fixtures[`../shared/fixtures/${name}`];
+const fixtures = import.meta.glob('../../shared/fixtures/*.json', { eager: true, import: 'default' });
+const pick = (name) => fixtures[`../../shared/fixtures/${name}`];
 
 const sampleLobby = {
   code: 'ABCD', hostId: 'p1', state: 'playing',
