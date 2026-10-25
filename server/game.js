@@ -13,7 +13,7 @@
 import { World, Vec2, Box, Circle, Edge } from 'planck';
 import { CAR_STATE, EVENT, BUFF, packCar } from '../shared/protocol.js';
 import {
-  ARENA, SCALE, CAR_SIZE, OBSTACLES, SPAWN_POINTS, CARS, DEFAULT_CAR,
+  ARENA, SCALE, CAR_SIZE, OBSTACLES, MAPS, DEFAULT_MAP, SPAWN_POINTS, CARS, DEFAULT_CAR,
 } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { carHit, wallHit, flipTick, killReward, liveScore } from './mechanics.js';
@@ -22,8 +22,9 @@ const NO_INPUT = { tilt: 0, accel: false, taps: 0 };
 const VELOCITY_ITERATIONS = 8; // Planck solver passes per step
 const POSITION_ITERATIONS = 3;
 
-/** players: [{ id }] in spawn order. */
-export function createGame(players) {
+/** players: [{ id }] in spawn order. mapId: a key of MAPS (the arena's obstacles). */
+export function createGame(players, mapId = DEFAULT_MAP) {
+  const obstacles = (MAPS[mapId] || MAPS[DEFAULT_MAP])?.obstacles ?? OBSTACLES;
   const world = new World({ gravity: Vec2(0, 0) }); // top-down: no gravity
   const cars = new Map();   // id -> car; dead cars stay (without a body) so clients can draw the wreck and the KO
   const stats = new Map();  // id -> { kills, damage } for this round
@@ -132,9 +133,11 @@ export function createGame(players) {
     corners.forEach((c, i) => {
       walls.createFixture(new Edge(c, corners[(i + 1) % 4]), { restitution: CONFIG.WALL_RESTITUTION });
     });
-    for (const o of OBSTACLES) {
-      world.createBody({ position: Vec2(o.x / SCALE, o.y / SCALE) })
-        .createFixture(new Circle(o.r / SCALE), { restitution: CONFIG.OBSTACLE_RESTITUTION });
+    for (const o of obstacles) {
+      // Bollards and tire stacks are circles; barriers are rotated boxes. All count as walls.
+      const shape = o.kind === 'box' ? new Box(o.w / 2 / SCALE, o.h / 2 / SCALE) : new Circle(o.r / SCALE);
+      world.createBody({ position: Vec2(o.x / SCALE, o.y / SCALE), angle: o.a || 0 })
+        .createFixture(shape, { restitution: CONFIG.OBSTACLE_RESTITUTION });
     }
 
     // Planck mixes restitution by taking the larger value, so a car (CAR_RESTITUTION) would

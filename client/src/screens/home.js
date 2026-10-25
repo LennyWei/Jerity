@@ -6,6 +6,7 @@
 
 import { h, store } from '../ui.js';
 import { mountVerity, LINES } from '../verity-ui.js';
+import { mountMenuCars } from '../menu-cars.js';
 import { C2S, CODE_LENGTH, CODE_ALPHABET, ROOM_STATE } from '../../../shared/protocol.js';
 import { NAME_MAX, MAX_PLAYERS } from '../../../shared/constants.js';
 
@@ -91,8 +92,10 @@ export function mount(root, { net, code = '', error = '', onCreate, onJoin }) {
   refresh();
 
   const helper = h('div');
+  const rink = h('canvas.menu-rink', { 'aria-hidden': 'true' });
   const el = h('div.screen.center.crt', {},
     h('h1.brand', {}, 'JER', h('span', {}, 'ITY')),
+    rink,
     h('p.tagline', {}, 'Tilt to steer. Ram their side. Last car standing wins.'),
     helper,
     h('div.stack', {},
@@ -110,6 +113,7 @@ export function mount(root, { net, code = '', error = '', onCreate, onJoin }) {
     ));
   root.append(el);
   const verity = mountVerity(helper, { lines: LINES.home, name: () => name.value.trim() });
+  const stopRink = mountMenuCars(rink);
   (code ? name.value ? join : name : name).focus?.();
-  return () => { alive = false; clearTimeout(timer); verity.destroy(); el.remove(); };
+  return () => { alive = false; clearTimeout(timer); verity.destroy(); stopRink(); el.remove(); };
 }

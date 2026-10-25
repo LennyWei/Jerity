@@ -22,6 +22,7 @@ export const C2S = {
   LIST_ROOMS:  'listRooms',  // {}                         ack -> { rooms: RoomInfo[] } (home screen list)
   ADD_BOT:     'addBot',     // {}                         host only, in the lobby, ack -> { ok } | { error }
   REMOVE_BOT:  'removeBot',  // {}                         host only, in the lobby: removes the newest bot
+  SET_MAP:     'setMap',     // { map }                    host only, in the lobby: a key of MAPS
 };
 
 // Server -> client
@@ -109,6 +110,7 @@ export const EVENT = {
  * @typedef {Object} LobbyState
  * @property {string} code
  * @property {string|null} hostId
+ * @property {string} [map]           a key of MAPS (shared/constants.js); the arena for the next round
  * @property {string} state           one of ROOM_STATE
  * @property {LobbyPlayer[]} players
  */

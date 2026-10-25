@@ -6,6 +6,7 @@
 // and the router follows it; Play again just goes back to the lobby sooner.
 
 import { h, colorOf } from '../ui.js';
+import { mountVerity, LINES } from '../verity-ui.js';
 
 export function mount(root, { result, lobby, playerId, onPlayAgain }) {
   const players = new Map((lobby?.players || []).map((p, i) => [p.id, { ...p, i }]));
@@ -24,7 +25,9 @@ export function mount(root, { result, lobby, playerId, onPlayAgain }) {
       h('td', {}, r.score));
   });
 
-  const el = h('div.screen.center', {},
+  const helper = h('div');
+  const el = h('div.screen.center.crt', {},
+    helper,
     h('p.winner', {}, title),
     h('div.card', { style: { width: 'min(520px, 100%)' } },
       h('table.board', {},
@@ -33,5 +36,7 @@ export function mount(root, { result, lobby, playerId, onPlayAgain }) {
     h('div.stack', {}, h('button.btn.primary', { onclick: () => onPlayAgain?.() }, 'Play again'),
       h('p.muted', { style: { textAlign: 'center', margin: 0 } }, 'Score = damage dealt + 100 per KO + 150 for the win')));
   root.append(el);
-  return () => el.remove();
+  const verity = mountVerity(helper, { lines: LINES.results, name: () => players.get(playerId)?.name });
+  verity.verdict({ won: result.winnerId === playerId, winner: winner?.name || (result.winnerId ? 'Someone' : '') });
+  return () => { verity.destroy(); el.remove(); };
 }
