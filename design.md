@@ -126,9 +126,15 @@ Events:
 - Arena: flat and closed, **1000 x 600 world units**. Planck scale: `SCALE = 20` units per meter, so the Planck world is 50 x 30 m. Small enough that 8 cars can't avoid each other.
 - Top-down: world gravity `(0, 0)`.
 - Walls: four static edge bodies.
-- Obstacles: 3 static pillars (`OBSTACLES` in `constants.js`).
+- Obstacles: 4 static pillars in the gaps between the spawn lanes, leaving the middle open for clashes (`OBSTACLES` in `constants.js`).
 - Car body: dynamic box 40 x 24 units, density from car stats, restitution 0.5.
-- Spawns: evenly spaced on a circle of radius 220 around the center, facing the center.
+- Spawns: `SPAWN_POINTS` on the edges, corners first, then the middle of each edge (2 players: opposite corners; 4: all corners), facing the center. The drive from every spawn point to the middle misses the pillars.
+
+### Drive modes (`DRIVE_MODE` in `config.js`)
+- `'omni'` (default): the phone's tilt is a direction on screen (input `tilt` = right, `throttle` = up the screen). The car's velocity swings toward it at `OMNI_ACCEL` and the nose turns to face where it goes. No grip, no instant launch. Tip-over: at `OMNI_FLIP_SPEED_FRAC` of top speed, demanding a direction `OMNI_FLIP_ANGLE_DEG` or more off course for `FLIP_HOLD_MS`.
+- `'car'`: roll steers, tipping the phone forward/back is the throttle (partial throttle cruises; back brakes, then reverses). The tick loop below describes this mode. Steering swings the other way only while actually reversing, not while being knocked backwards.
+
+Both modes: stunned, flipped and knocked-back cars ignore input; damage, knockback and walls work the same.
 
 ### Tick loop (30 Hz, fixed timestep `dt = 1/30`)
 For each car:
@@ -144,7 +150,7 @@ For each car:
 5. Apply queued contacts (5.1, 5.2, 5.4), then deaths and kill rewards (5.5), then the win check.
 6. At 20 Hz, broadcast `snap` with the events since the last one.
 
-Collect contacts in the Planck `post-solve` listener into a queue; apply damage after `step`, never inside the callback.
+Collect contacts in the Planck `begin-contact` listener into a queue (with the velocities at that moment); apply damage after `step`, never inside the callback. Not `post-solve`: by then the solver has already bounced the cars and the hit speed is gone.
 
 ---
 
@@ -167,10 +173,10 @@ If `max(approachA, approachB) < MIN_IMPACT_SPEED`, ignore. Otherwise:
 
 **Head-on** (both `noseA` and `noseB` ≥ `HEADON_THRESHOLD`):
 ```
-closing = approachA + approachB
-dmg     = DMG_K * closing² * HEADON_MULT     // same for both cars
+dmgToA = DMG_K * approachB² * HEADON_MULT * sqrt(massB / massA)   // hurt by the other's speed into you
+dmgToB = DMG_K * approachA² * HEADON_MULT * sqrt(massA / massB)
 ```
-Both cars take `dmg` and both are **stunned** for `CONCUSSION_MS` (1.5 s). Emit `headon`.
+Each car takes damage from the other car's speed into it, so a fast rammer hits hard and a car that only just started toward it barely hurts it back (12 vs 4 m/s: 28 vs 3 HP). Both are **stunned** for `CONCUSSION_MS` (1.5 s). Emit `headon` with `dmgA`/`dmgB` (what each took) and `dmg` (the larger).
 
 **Side or rear** (otherwise): the attacker is the car with the larger `approach * (0.3 + 0.7 * nose)`. Say A attacks B:
 ```
@@ -186,6 +192,7 @@ Common rules:
 - A shield buff or post-recovery invulnerability blocks damage.
 - Record the victim's `lastAttacker` and time for kill credit.
 - The attacker earns `SCORE_PER_DAMAGE` per HP dealt.
+- Knockback: both cars are pushed apart along the hit at `KNOCKBACK_SPEED` (`HEADON_KNOCKBACK_SPEED` after a head-on) and get no throttle or grip for `KNOCKBACK_MS`, so they separate instead of grinding, sliding along each other, or concussing each other again right after the stun.
 
 Why this works: hitting someone's side or rear at speed is the best play, a head-on is a punishing trade for both, and getting caught from behind is the worst outcome. Positioning and approach angle matter, which is where the tilt skill shows.
 
@@ -193,6 +200,7 @@ Why this works: hitting someone's side or rear at speed is the best play, a head
 
 On contact with a wall or pillar where impact speed (velocity into the surface) ≥ `WALL_MIN_SPEED`:
 - Speed is multiplied by `WALL_SPEED_KEEP` (keep 35%).
+- Any bump of `MIN_IMPACT_SPEED` or more (even under `WALL_MIN_SPEED`) knocks the car off the surface at `WALL_KNOCKBACK_SPEED`, with no throttle or grip for `KNOCKBACK_MS`. `WALL_MIN_SPEED` is above the 4 m/s launch, so holding accel against a wall bounces off it for free instead of grinding HP away.
 - Self-damage `WALL_DMG_K * impactSpeed²` (about 16 HP at full speed, about 1 HP at a gentle bump). Emit `wall`.
 - If this kills the car within `KILL_CREDIT_MS` of being hit by someone, that player gets the kill.
 
@@ -205,7 +213,7 @@ else:
     flipHeld = 0
 if flipHeld >= FLIP_HOLD_MS: flip
 ```
-Full speed plus full steering held for 0.4 s flips the car. This depends on the player's input, so players can learn exactly where the limit is: ease off the throttle or the tilt and you're safe.
+(Nearly) full speed plus full steering held for 2.5 s flips the car (`FLIP_SPEED_FRAC` and `FLIP_TILT` 0.95): rare on purpose, for balance. In omni mode the same hold time applies to yanking off course, which can't be held that long, so omni cars effectively don't flip at this setting. This depends on the player's input, so players can learn exactly where the limit is: ease off the throttle or the tilt and you're safe.
 
 On flip: `state = flipped`, the car slides to a stop (`FLIPPED_DAMPING`), takes extra damage, and the player taps `RECOVER_TAPS` (8) times to get back up. Then a short invulnerability (`RECOVER_INVULN_MS`) and `recover`.
 
@@ -218,6 +226,7 @@ Tune `FLIP_SPEED_FRAC` and `FLIP_TILT` with first-time players. If judges flip w
   - `KILL_BUFF = 'boost'` (default): acceleration x1.6, top speed x1.15. Rewards aggression and makes the killer visibly dangerous.
   - `KILL_BUFF = 'shield'`: immune to damage. Safer for the killer but lets them stall. Kept as a config switch so the team can try both.
 - Kill credit with no attacker (a solo wall death) gives no reward.
+- A killer knocked to 0 HP in the same crash gets no reward either: both die (a double KO).
 
 ### 5.5 Rounds and scoring
 
@@ -235,18 +244,18 @@ Person 3 owns tuning; nobody hardcodes numbers elsewhere. Key starting values:
 |---|---|---|
 | `MIN_SPEED` | 4 m/s | launch speed when accel is pressed |
 | `ENGINE` | 6 | forward accel per unit mass |
-| `DMG_K` | 0.6 | damage scale (full-speed nose into side ≈ 118 HP: one-shot) |
+| `DMG_K` | 0.36 | damage scale (full-speed nose into side ≈ 71 HP, rear ≈ 92: no one-shots) |
 | `REAR_BONUS` | 0.3 | rear hits up to +30% |
 | `ATTACKER_RECOIL` | 0.1 | attacker's share of side/rear damage |
 | `HEADON_MULT` | 0.35 | head-on damage to each car |
 | `CONCUSSION_MS` | 1500 | head-on stun |
-| `FLIP_SPEED_FRAC` / `FLIP_TILT` / `FLIP_HOLD_MS` | 0.85 / 0.85 / 400 | tip-over trigger |
+| `FLIP_SPEED_FRAC` / `FLIP_TILT` / `FLIP_HOLD_MS` | 0.95 / 0.95 / 2500 | tip-over trigger (rare on purpose) |
 | `RECOVER_TAPS` | 8 | taps to get back up |
 | `WALL_SPEED_KEEP` / `WALL_DMG_K` | 0.35 / 0.08 | wall penalty |
 | `KILL_HEAL_FRAC` / `KILL_BUFF` / `BUFF_MS` | 0.3 / boost / 4000 | kill reward |
 | `ROUND_TIME_S` | 120 | |
 
-**First tuning target:** `DMG_K` is deliberately high, so a perfect full-speed side hit nearly one-shots. If rounds end in 20 seconds, cut `DMG_K` to about 0.3 so a kill takes two or three good hits.
+**Tuning so far:** `DMG_K` went from 0.6 (a full-speed side hit one-shot) to 0.36: side ≈ 71, rear ≈ 92, so a kill takes two good hits and a rear hit is the best one. Bot rounds went from about 20 s to 30-50 s.
 
 All cars use `balanced` stats for the MVP (100 HP, 14 m/s, 3.2 rad/s).
 
@@ -310,10 +319,10 @@ Send `input` at 30 Hz with the accumulated tap count, then reset it.
 - Each player gets the lowest free color index.
 - Host is the creator; if the host leaves, the oldest remaining human becomes host.
 - Joining mid-round is refused (except in bot rooms, for testing).
-- Disconnect during play: the car keeps zero input for `DISCONNECT_GRACE_MS`, then is removed (counts as dead, no kill credit).
+- Disconnect during play: for `DISCONNECT_GRACE_MS` (15 s) the car is a ghost (`CAR_STATE.DISCONNECTED`: frozen, out of the physics, nothing hits it, bots ignore it; drawn faint in a bubble with a spinning "Disconnected" label). The phone rejoins with `playerId` + the secret `rejoinKey` from its join ack and gets the same car back, briefly invulnerable, even mid-round, even if the server hadn't noticed the drop yet. No rejoin in time: removed (no kill credit). The server's heartbeat is `DISCONNECT_GRACE_MS / 2`, so a silent phone is noticed within about 15 s.
 
 ### Bots (`/server/bots.js`)
-`bots: 3` on `createRoom` adds 3 server-side players. MVP bots steer toward the nearest car with full accel and moderate tilt (they never flip). Essential for testing collisions with one or two phones and for tuning alone.
+`bots: 3` on `createRoom` adds 3 server-side players. MVP bots steer toward the nearest car with full accel and moderate tilt (they never flip). When the target faces a bot, the lower id of the two aims `BOT_FLANK_DIST` beside it instead, so bots swerve into side hits rather than head-on double KOs or circling each other; with the target behind it, a bot lets off the throttle to turn tighter. Essential for testing collisions with one or two phones and for tuning alone.
 
 ---
 

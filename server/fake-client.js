@@ -27,7 +27,7 @@ socket.on('connect', () => {
 
 socket.on(S2C.LOBBY, (l) => console.log('lobby:', l.state, l.players.map(p => p.name).join(', ')));
 socket.on(S2C.COUNTDOWN, (c) => console.log('countdown:', c.seconds));
-socket.on(S2C.ROUND_END, (r) => console.log('round end, winner team', r.winnerTeam, r.leaderboard));
+socket.on(S2C.ROUND_END, (r) => console.log('round end, winner', r.winnerId, r.leaderboard));
 
 socket.on(S2C.SNAP, (snap) => {
   snaps += 1;

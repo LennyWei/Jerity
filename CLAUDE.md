@@ -8,11 +8,10 @@ Bumper Brawl: a free-for-all bumper-car game for 4 to 8 players in the phone bro
 
 ## Who I am and what I own
 
-I am Person 1: **server and physics**. I own `server/index.js`, `server/rooms.js`, `server/game.js`, `server/bots.js`.
+I am Person 1: **server and physics**. I own `server/index.js`, `server/rooms.js`, `server/game.js`, `server/bots.js`, `server/sim.js`. Since Oct 24 I also own Person 3's part: `server/mechanics.js` and `shared/config.js` (tuning).
 
 Other people own (do not rewrite their files without asking me first):
 - Person 2: `client/src/input.js`, `render.js`, `interp.js`, game screen
-- Person 3: `server/mechanics.js`, `shared/config.js` (tuning)
 - Person 4: deployment, `deploy.sh`, lobby/home/results/spectate screens, art, pitch
 
 ## Deadline
@@ -29,16 +28,19 @@ Out until FFA is done: team modes (2v2/3v3/4v4), car picking, items/perks, parry
 
 ```
 npm install
-npm run fake          # fake server on :3000, room TEST always running with 3 bots
+npm run dev           # real server on :3000, restarts on file changes (TEST_ROOM=on adds the always-on TEST bot room)
+npm start             # same without watching (what pm2 runs)
+npm run sim           # one headless round through game.js, no sockets; prints events
+npm run fake          # fake server on :3000 (same port: run one or the other)
 npm run fake:client   # headless player that joins TEST and logs everything
+npm run dev:client    # Vite client with HMR; proxies /socket.io to :3000
+npm run dev:phone     # same over HTTPS (self-signed) so phones allow motion sensors
+npm run build         # client -> client/dist, which the server serves
 ```
-(Add `npm run dev` / `npm start` for the real server once `server/index.js` exists.)
 
-Env vars: `PORT` (server, default 3000); `SERVER` and `CODE` (fake client, defaults `http://localhost:3000` and `TEST`). `/health` returns `{ ok, rooms }`.
+Env vars: `PORT` (server, default 3000); `TEST_ROOM=on` (real server: run room TEST, off by default); `SERVER` and `CODE` (fake client, defaults `http://localhost:3000` and `TEST`). `/health` returns `{ ok, rooms }`.
 
-There is no test runner or linter; testing is the fake client plus checking by hand (see Testing).
-
-Planck is not in `package.json` yet: `npm install planck` before writing `game.js`.
+There is no test runner or linter; testing is `npm run sim`, the fake client, and checking by hand (see Testing).
 
 ## Layout
 
@@ -63,7 +65,9 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
 - **Taps are a count, not a boolean.** Accumulate `input.taps` on the player until a tick consumes it.
 - ES modules everywhere (`"type": "module"`), Node 20.
 
-## Building the real server (my next steps)
+## Building the real server
+
+Status (Oct 24 night): all five steps are done and tested on branch `server/phase-a`, plus knockback (cars and walls), edge spawns, the 4-pillar map, and Person 2's tilt-only controls (`DRIVE_MODE` 'omni' by default, 'car' optional; design.md section 4). `npm run sim` checks both modes. Disconnects: 15 s ghost + rejoin by key (design.md section 8); the TEST room is off unless `TEST_ROOM=on`. Left: tuning on phones.
 
 1. **`rooms.js`:** lift room logic from `fake.js` as-is (codes, join/leave, colors, ready, host start, countdown, round end, scoring, TEST room). It already matches the contract.
 2. **`game.js`:** replace `stepCar` and `fakeEvents` with a Planck world per room:
@@ -71,8 +75,9 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
    - Fixed `dt = 1/TICK_HZ`, `world.step(dt, 8, 3)`.
    - Driving per design.md section 4: lateral grip impulse, instant launch to `MIN_SPEED`, engine force to `maxSpeed`, `angularVelocity = tilt * turnRate * min(1, speed / MIN_SPEED)`, boost buff multipliers.
    - States: stunned (no input, coast), flipped (no input, heavy damping, count taps), dead (destroy body).
-   - Collect contacts in `post-solve` into a queue with velocities and the world normal; apply after `step`, never inside the callback.
-3. **Hook in `mechanics.js` (Person 3):** call pure functions for car-car hits (head-on vs side/rear), wall/pillar hits, tip-over check, kill reward, scoring. If they are not ready, keep the equivalent logic from `fake.js` (`applyDamage`, `checkDeath`, `surfaceHit`, flip check) and swap later.
+   - Collect contacts in `begin-contact` into a queue with velocities, headings and the world normal; apply after `step`, never inside the callback. Not `post-solve`: by then the solver has already bounced the cars and the hit speed is gone.
+   - Planck gotchas: it mixes restitution with max() (walls override it in `pre-solve`), and it applies `angularDamping` even after you set the angular velocity (damping is 0 while steering).
+3. **`mechanics.js` (mine now, was Person 3's):** pure functions for car-car hits (head-on vs side/rear), wall/pillar hits, tip-over check, kill reward, scoring. `game.js` decides when they apply and applies the results.
 4. **`bots.js`:** steer toward the nearest living car, accel on, tilt clamped below `FLIP_TILT` so bots never flip.
 5. **`index.js`:** Express serving `client/dist` + Socket.IO on one port; `/health` endpoint.
 
@@ -82,7 +87,7 @@ Keep `fake.js` working until the real server passes the same tests; clients may 
 
 - `npm run fake:client` (works against the real server too: `SERVER=http://localhost:3000`).
 - Create a room with `{ bots: 4 }` to test collisions alone.
-- Check by hand: a full-speed side hit does more than a slow one; rear > side; head-on stuns both for ~1.5 s; holding full tilt at full speed flips after ~0.4 s; 8 taps recovers; wall hits cost speed and a little HP; a kill heals the killer 30% and sets `buff`.
+- `npm run sim` measures all of these against design.md and exits 1 if one is off: a full-speed side hit does more than a slow one; rear > side; head-on stuns both for ~1.5 s; holding full tilt at full speed flips after ~0.4 s; 8 taps recovers; wall hits cost speed and a little HP; a kill heals the killer 30% and sets `buff`. Run it after every physics or tuning change.
 - Snapshots must stay small: always go through `packCar`.
 
 ## Deployment (Person 4 sets up; know the shape)

@@ -1,0 +1,8 @@
+# deploy/Caddyfile: HTTPS for the game server. Replace the host with your VM's IP, dots as dashes.
+# Caddy gets the certificate automatically; WebSockets (Socket.IO) pass through reverse_proxy.
+# Install: sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+
+1-2-3-4.sslip.io {
+	encode gzip
+	reverse_proxy localhost:3000
+}

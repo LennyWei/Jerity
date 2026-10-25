@@ -1,11 +1,12 @@
 <!doctype html>
 <!-- Person 2's stand-in harness: the game screen on an inline fake net, no server needed.
-     Your car (white outline) is driven by your own tilt / ACCEL / TAP; 3 bots circle.
+     Your car (white outline) is driven by your own tilt, same rules as server/game.js: omni
+     (tilt the way you want to go) or car-style (roll steers, tip drives), per DRIVE_MODE.
      Flip rule as in design.md: near max speed with |tilt| >= FLIP_TILT for FLIP_HOLD_MS.
      Recover with RECOVER_TAPS taps (shakes count as taps while flipped).
      Hits, head-ons (stun) and kills (heal + buff) only happen when cars actually touch,
      with design.md 5.1 damage. Bots lap an oval at different speeds and rear-end each other.
-     Laptop keys: arrows steer, Up = accel, Space = tap, S = shake. Flags: ?fx=low|off, ?fps=1 -->
+     Laptop keys: Left/Right steer, Up forward, Down reverse, Space = tap, S = shake. Flags: ?fx=low|off, ?fps=1 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -40,7 +41,7 @@ const players = [ME, 'b1', 'b2', 'b3'].map((id, i) => ({ id, name: i ? `Bot ${i}
 const lobby = { code: 'DEV1', hostId: ME, state: 'playing', players };
 const car = CARS[DEFAULT_CAR];
 
-let lastInput = { tilt: 0, accel: false, taps: 0 };
+let lastInput = { tilt: 0, throttle: 0, accel: false, taps: 0 };
 let pendingTaps = 0;
 let cars, roundStart, greedySince;
 
@@ -48,7 +49,7 @@ function newRound() {
   cars = players.map((p, i) => {
     const ang = (i / players.length) * Math.PI * 2;
     return { id: p.id, x: 500 + Math.cos(ang) * 220, y: 300 + Math.sin(ang) * 220, a: ang + Math.PI,
-      v: 0, hp: car.hp, s: CAR_STATE.ALIVE, taps: 0, buff: BUFF.NONE, buffUntil: 0, stunUntil: 0, sc: 0, phase: ang };
+      v: 0, vx: 0, vy: 0, hp: car.hp, s: CAR_STATE.ALIVE, taps: 0, buff: BUFF.NONE, buffUntil: 0, stunUntil: 0, sc: 0, phase: ang };
   });
   greedySince = 0;
   let n = CONFIG.COUNTDOWN_S;
@@ -71,7 +72,8 @@ function damage(attacker, victim, dmg, events) {
   events.push({ type: EVENT.KILL, attacker: attacker.id, victim: victim.id, heal, buff: BUFF.BOOST });
 }
 
-const BOT_LAP = [0.5, 0.62, 0.74];  // rad/s around the oval
+const BOT_LAP = [0.5, 0.62, 0.74];
+const OMNI = CONFIG.DRIVE_MODE === 'omni';  // rad/s around the oval
 const TOUCH = 34;                   // world units between centers that counts as contact
 const pairHitAt = new Map();
 
@@ -100,7 +102,7 @@ function collide(a, b, now, events) {
     events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg, stunMs: CONFIG.CONCUSSION_MS });
     for (const c of [a, b]) {
       if (c.s === CAR_STATE.ALIVE) { c.s = CAR_STATE.STUNNED; c.stunUntil = now + CONFIG.CONCUSSION_MS; }
-      if (c.id === ME) c.v = 0;
+      if (c.id === ME) c.v = c.vx = c.vy = 0;
     }
     if (a.hp <= dmg && b.hp <= dmg) { // both wrecked: nobody gets a heal
       for (const [k, v] of [[a, b], [b, a]]) {
@@ -120,7 +122,7 @@ function collide(a, b, now, events) {
   if (dmg < 1) return;
   events.push({ type: EVENT.HIT, attacker: atk.id, victim: vic.id, dmg, kind: rear > 0.5 ? HIT_KIND.REAR : HIT_KIND.SIDE });
   atk.hp = Math.max(1, atk.hp - Math.round(dmg * CONFIG.ATTACKER_RECOIL));
-  if (atk.id === ME) atk.v *= 0.4;
+  if (atk.id === ME) { atk.v *= 0.4; atk.vx *= 0.4; atk.vy *= 0.4; }
   if (vic.id === ME) { vic.x += dir.x * 12; vic.y += dir.y * 12; } else vic.phase += 0.25; // knocked along
   damage(atk, vic, dmg, events);
 }
@@ -134,10 +136,40 @@ setInterval(() => {
   for (const c of cars) if (c.buff && now > c.buffUntil) c.buff = BUFF.NONE;
 
   if (me.s === CAR_STATE.STUNNED && now > me.stunUntil) me.s = CAR_STATE.ALIVE;
-  if (me.s === CAR_STATE.ALIVE) {
+  if (me.s === CAR_STATE.ALIVE && OMNI) {
+    // Same omni rules as server/game.js driveOmni(): velocity swings toward the tilt direction.
     const max = car.maxSpeed * (me.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT : 1);
-    me.v = inp.accel ? Math.min(max, Math.max(CONFIG.MIN_SPEED, me.v + CONFIG.ENGINE * dt)) : me.v * 0.94;
-    me.a += inp.tilt * car.turnRate * dt * Math.min(1, me.v / CONFIG.MIN_SPEED);
+    const wx = inp.tilt || 0, wy = -(inp.throttle || 0), want = Math.min(1, Math.hypot(wx, wy));
+    if (want > 0) {
+      const k = (max * want) / Math.hypot(wx, wy), dvx = wx * k - me.vx, dvy = wy * k - me.vy, dv = Math.hypot(dvx, dvy);
+      const s = Math.min(1, (CONFIG.OMNI_ACCEL * dt) / (dv || 1));
+      me.vx += dvx * s; me.vy += dvy * s;
+    } else { const f = Math.exp(-CONFIG.COAST_DAMPING * dt); me.vx *= f; me.vy *= f; }
+    me.v = Math.hypot(me.vx, me.vy);
+    if (me.v > 0.8) {
+      const d = Math.atan2(Math.sin(Math.atan2(me.vy, me.vx) - me.a), Math.cos(Math.atan2(me.vy, me.vx) - me.a));
+      me.a += Math.max(-car.turnRate * 2, Math.min(car.turnRate * 2, d * CONFIG.OMNI_FACE_GAIN)) * dt;
+    }
+    const off = want > 0 && me.v > 0 ? Math.acos(Math.max(-1, Math.min(1, (wx * me.vx + wy * me.vy) / (Math.hypot(wx, wy) * me.v)))) * 57.3 : 0;
+    const greedy = me.v >= car.maxSpeed * CONFIG.OMNI_FLIP_SPEED_FRAC && want >= CONFIG.FLIP_TILT && off >= CONFIG.OMNI_FLIP_ANGLE_DEG;
+    greedySince = greedy ? greedySince || now : 0;
+    if (greedySince && now - greedySince >= CONFIG.FLIP_HOLD_MS) {
+      me.s = CAR_STATE.FLIPPED; me.v = me.vx = me.vy = 0; me.taps = 0; greedySince = 0;
+      events.push({ type: EVENT.FLIP, id: ME });
+    }
+  } else if (me.s === CAR_STATE.ALIVE) {
+    const max = car.maxSpeed * (me.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT : 1);
+    // Same throttle rules as the server: cruise at throttle x top speed, brake then reverse.
+    const thr = inp.throttle ?? (inp.accel ? 1 : 0);
+    if (thr > 0) {
+      const target = max * thr;
+      me.v = me.v < Math.min(CONFIG.MIN_SPEED, target) ? Math.min(CONFIG.MIN_SPEED, target)
+        : me.v < target ? Math.min(target, me.v + CONFIG.ENGINE * dt) : me.v * Math.exp(-CONFIG.COAST_DAMPING * dt);
+    } else if (thr < 0) {
+      me.v = me.v > 0.5 ? Math.max(0, me.v - CONFIG.BRAKE * -thr * dt)
+        : Math.max(-CONFIG.REVERSE_MAX_SPEED * -thr, me.v - CONFIG.REVERSE_ENGINE * dt);
+    } else me.v *= Math.exp(-CONFIG.COAST_DAMPING * dt);
+    me.a += inp.tilt * car.turnRate * dt * Math.max(-1, Math.min(1, me.v / CONFIG.MIN_SPEED));
     // design.md 5.3: greedy driving tips you over
     const greedy = me.v >= car.maxSpeed * CONFIG.FLIP_SPEED_FRAC && Math.abs(inp.tilt) >= CONFIG.FLIP_TILT;
     greedySince = greedy ? greedySince || now : 0;
@@ -148,9 +180,9 @@ setInterval(() => {
   } else if (me.s === CAR_STATE.FLIPPED) {
     me.taps += taps;
     if (me.taps >= CONFIG.RECOVER_TAPS) { me.s = CAR_STATE.ALIVE; me.taps = 0; events.push({ type: EVENT.RECOVER, id: ME }); }
-  } else me.v *= 0.9;
-  me.x += Math.cos(me.a) * me.v * SCALE * dt;
-  me.y += Math.sin(me.a) * me.v * SCALE * dt;
+  } else { me.v *= 0.9; me.vx *= 0.9; me.vy *= 0.9; }
+  if (OMNI) { me.x += me.vx * SCALE * dt; me.y += me.vy * SCALE * dt; }
+  else { me.x += Math.cos(me.a) * me.v * SCALE * dt; me.y += Math.sin(me.a) * me.v * SCALE * dt; }
   if (me.x < 20 || me.x > ARENA.W - 20 || me.y < 20 || me.y > ARENA.H - 20) {
     me.x = Math.max(20, Math.min(ARENA.W - 20, me.x)); me.y = Math.max(20, Math.min(ARENA.H - 20, me.y));
     if (me.v > CONFIG.WALL_MIN_SPEED && me.s !== CAR_STATE.DEAD) {
@@ -158,7 +190,7 @@ setInterval(() => {
       me.hp = Math.max(1, me.hp - dmg);
       events.push({ type: EVENT.WALL, id: ME, dmg });
     }
-    me.v *= CONFIG.WALL_SPEED_KEEP;
+    me.v *= CONFIG.WALL_SPEED_KEEP; me.vx *= CONFIG.WALL_SPEED_KEEP; me.vy *= CONFIG.WALL_SPEED_KEEP;
   }
 
   // Bots lap an oval at different speeds, so faster ones catch and rear-end slower ones.

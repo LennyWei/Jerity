@@ -124,8 +124,9 @@ export function createRenderer(canvas, opts = {}) {
           const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
           rings.push({ x, y, r0: 10, r1: 120, life: 0, max: 450, color: '#ffffff' });
           sparks(x, y, 30, ['#ffffff', '#c8d6ff', '#ffd23f'], 360);
-          for (const c of [a, b]) {
-            if (e.dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 16);
+          // Each car shows what it took (dmgA/dmgB: the faster car hits harder); older servers send dmg only.
+          for (const [c, dmg] of [[a, e.dmgA ?? e.dmg], [b, e.dmgB ?? e.dmg]]) {
+            if (dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(dmg)}`, '#ff6b6b', 16);
             floatText(c.x, c.y - 44, 'CONCUSSED', '#c8d6ff', 15);
           }
           carFlash.set(e.a, lastNow);
@@ -134,7 +135,10 @@ export function createRenderer(canvas, opts = {}) {
             hurt(10, 120);
             flashWhite = 1;
             showBanner('CONCUSSED', '#c8d6ff');
-            toast(`Head-on with ${nameOf(e.a === me ? e.b : e.a)} · both -${Math.round(e.dmg || 0)}`, '#c8d6ff');
+            const meA = e.a === me;
+            const took = Math.round((meA ? e.dmgA : e.dmgB) ?? e.dmg ?? 0);
+            const dealt = Math.round((meA ? e.dmgB : e.dmgA) ?? e.dmg ?? 0);
+            toast(`Head-on with ${nameOf(meA ? e.b : e.a)} · you -${took}, them -${dealt}`, '#c8d6ff');
           }
           break;
         }
@@ -305,12 +309,6 @@ export function createRenderer(canvas, opts = {}) {
     for (let y = 50; y < H; y += 50) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(W / 2, H / 2, 220, 0, Math.PI * 2);
-    ctx.stroke();
-
     // Walls: rubber bumper with hazard dashes
     ctx.lineWidth = 8;
     ctx.strokeStyle = '#2b3242';
@@ -341,6 +339,7 @@ export function createRenderer(canvas, opts = {}) {
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(c.a);
+    if (c.s === CAR_STATE.DISCONNECTED) ctx.globalAlpha = 0.3; // a ghost until the phone rejoins
 
     if (c.buff === BUFF.BOOST && c.s !== CAR_STATE.DEAD) { // flame trail out the back
       const len = 16 + Math.random() * 10;
@@ -433,6 +432,28 @@ export function createRenderer(canvas, opts = {}) {
       }
       ctx.restore();
     }
+
+    if (c.s === CAR_STATE.DISCONNECTED) { // phone dropped: bubble + "Disconnected" with a spinning coil
+      ctx.save();
+      ctx.globalAlpha = 0.55 + Math.sin(now / 300) * 0.15;
+      ctx.fillStyle = 'rgba(200,214,255,0.08)';
+      ctx.strokeStyle = '#c8d6ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(c.x, c.y, 34, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+      ctx.globalAlpha = 1;
+      ctx.font = '600 12px system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      const label = 'Disconnected';
+      const w = ctx.measureText(label).width + 30, y = c.y - 50;
+      ctx.fillStyle = 'rgba(11,13,18,0.75)';
+      roundRect(c.x - w / 2, y - 10, w, 20, 10); ctx.fill();
+      ctx.beginPath(); ctx.arc(c.x - w / 2 + 12, y, 5, now / 150, now / 150 + Math.PI * 1.5); ctx.stroke();
+      ctx.fillStyle = '#c8d6ff';
+      ctx.fillText(label, c.x - w / 2 + 22, y);
+      ctx.restore();
+    }
   }
 
   /**
@@ -445,7 +466,7 @@ export function createRenderer(canvas, opts = {}) {
     const fx = Math.cos(mine.a), fy = Math.sin(mine.a);
     let target = null, best = 280;
     for (const c of cars) {
-      if (c.id === me || c.s === CAR_STATE.DEAD) continue;
+      if (c.id === me || c.s === CAR_STATE.DEAD || c.s === CAR_STATE.DISCONNECTED) continue;
       const dx = c.x - mine.x, dy = c.y - mine.y, d = Math.hypot(dx, dy);
       if (d < best && (dx * fx + dy * fy) / d > Math.cos(0.5)) { best = d; target = c; } // within ~30 deg
     }
@@ -586,6 +607,8 @@ export function createRenderer(canvas, opts = {}) {
     ctx.globalAlpha = 1;
 
     if (typeof hud.tilt === 'number') drawTiltMeter(hud.tilt);
+    if (typeof hud.throttle === 'number') drawThrottleMeter(hud.throttle);
+    if (hud.move) drawMovePad(hud.move);
 
     if (hud.banner) pill(cssW / 2, cssH - 64, hud.banner, '#e8ecf4', 15);
 
@@ -632,13 +655,17 @@ export function createRenderer(canvas, opts = {}) {
       if (hud.countdown > 0) { // driving guide while we calibrate
         ctx.font = '700 16px system-ui, sans-serif';
         ctx.fillStyle = '#ffd23f';
-        ctx.fillText("Hold your phone the way you'll drive and keep it still: that sets straight", cssW / 2, cssH / 2 + 44);
+        ctx.fillText("Hold your phone the way you'll play and keep it still: that's 'stopped'", cssW / 2, cssH / 2 + 44);
         ctx.font = '600 14px system-ui, sans-serif';
         ctx.fillStyle = '#c8cfdc';
         const tips = [
-          'Tilt to steer  ·  hold ACCEL (right) to drive  ·  "Center steering" re-sets straight',
+          CONFIG.DRIVE_MODE === 'omni'
+            ? 'Tilt the phone the way you want to go  ·  level = stop'
+            : 'Roll left/right to steer  ·  tip the top away to drive, toward you to reverse',
           'Ram SIDES and REARS — head-ons stun you both',
-          'Full speed + hard turn = you flip. Ease off when the edges glow red',
+          CONFIG.DRIVE_MODE === 'omni'
+            ? 'Yanking the other way at full speed flips you. Ease off when the edges glow red'
+            : 'Full speed + hard turn = you flip. Ease off when the edges glow red',
         ];
         tips.forEach((t, i) => ctx.fillText(t, cssW / 2, cssH / 2 + 72 + i * 22));
       }
@@ -718,6 +745,46 @@ export function createRenderer(canvas, opts = {}) {
     const t = Math.max(-1, Math.min(1, tilt));
     ctx.fillStyle = '#ffd23f';
     ctx.fillRect(Math.min(x + w / 2, x + w / 2 + (t * w) / 2), y, Math.abs(t * w) / 2, h);
+  }
+
+  /** Omni: which way you're tilting, as a dot in a ring (bottom right). Center ring = deadzone. */
+  function drawMovePad(m) {
+    const r = Math.min(46, cssH * 0.12), cx = cssW - r - 18, cy = cssH - r - 18;
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.beginPath(); ctx.arc(cx, cy, r + 8, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    const dz = (CONFIG.OMNI_DEADZONE ?? 0.2) * r;
+    ctx.beginPath(); ctx.arc(cx, cy, dz, 0, Math.PI * 2); ctx.stroke();
+    const len = Math.hypot(m.x, m.y), x = cx + m.x * r, y = cy - m.y * r;
+    if (len > 0) {
+      ctx.strokeStyle = len >= (CONFIG.FLIP_TILT ?? 0.85) ? '#ff9f43' : '#5ce1a0';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke();
+    }
+    ctx.fillStyle = len > 0 ? '#ffffff' : '#5ce1a0';
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+  }
+
+  /** Vertical gauge on the right: up = forward (green), down = reverse (orange). */
+  function drawThrottleMeter(t) {
+    const h = Math.min(170, cssH * 0.42), w = 12, x = cssW - 30, y = (cssH - h) / 2 + 20, mid = y + h / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    roundRect(x - 6, y - 22, w + 12, h + 44, 10); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(x, y, w, h);
+    const v = Math.max(-1, Math.min(1, t));
+    ctx.fillStyle = v >= 0 ? '#5ce1a0' : '#ff9f43';
+    ctx.fillRect(x, v >= 0 ? mid - (v * h) / 2 : mid, w, (Math.abs(v) * h) / 2);
+    ctx.fillStyle = v === 0 ? '#e8ecf4' : 'rgba(255,255,255,0.35)'; // neutral notch
+    ctx.fillRect(x - 3, mid - 1, w + 6, 2);
+    ctx.font = '800 10px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = v > 0 ? '#5ce1a0' : '#9aa3b5';
+    ctx.fillText('GO', x + w / 2, y - 10);
+    ctx.fillStyle = v < 0 ? '#ff9f43' : '#9aa3b5';
+    ctx.fillText('REV', x + w / 2, y + h + 11);
   }
 
   function pill(cx, cy, text, color, size) {
