@@ -26,28 +26,30 @@ const RECORDING_DURATION_MS = 10_000; // 10 seconds per player
  * @param {string} mimeType - MIME type of the audio (e.g. "audio/wav", "audio/webm")
  * @returns {Promise<string>} - Transcribed text
  */
-export async function transcribeAudio(audioBase64, mimeType = "audio/wav") {
-  const response = await ai.models.generateContent({
-    model: "gemini-3.7-flash",
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType,
-              data: audioBase64,
-            },
-          },
-          {
-            text: "Transcribe this audio exactly. Return only the transcription, nothing else. If the audio is silent or unintelligible, return '[silence]'.",
-          },
-        ],
-      },
-    ],
+
+export async function transcribeAudio(audioBase64, mimeType = "audio/webm") {
+  const cleanMime = mimeType.split(";")[0].trim(); // Strip ';codecs=opus'
+  const ext = cleanMime.includes("mp4") || cleanMime.includes("m4a") ? "m4a"
+            : cleanMime.includes("mp3") || cleanMime.includes("mpeg") ? "mp3"
+            : cleanMime.includes("wav") ? "wav"
+            : cleanMime.includes("ogg") ? "ogg"
+            : "webm";
+
+  const buffer = Buffer.from(audioBase64, "base64");
+  const formData = new FormData();
+  formData.append("file", new Blob([buffer], { type: cleanMime }), `speech.${ext}`);
+  formData.append("model", "whisper-large-v3-turbo");
+  formData.append("language", "en");
+
+  const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+    body: formData,
   });
 
-  return response.text.trim();
+  if (!res.ok) throw new Error(`Groq STT ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.text.trim() || "[silence]";
 }
 
 /**
