@@ -84,12 +84,15 @@ export const CONFIG = {
   // Rounds and scoring (FFA: last car alive wins)
   COUNTDOWN_S: 3,
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
-  RESULTS_MS: 5000,      // results screen, then back to the lobby (TEST room: next round)
+  ROUNDS_PER_MATCH: 5,   // Start plays this many rounds; the final standings rank by performance score
+  RESULTS_MS: 5000,      // round results, then the match's next round
+  MATCH_RESULTS_MS: 15000, // final standings after the last round, then back to the lobby (TEST room: a new match)
   DEV_MIN_PLAYERS: 1,    // used when the room was created with bots
   DISCONNECT_GRACE_MS: 15000, // a dropped phone keeps its car (a frozen ghost) this long to rejoin
   SCORE_PER_DAMAGE: 1,   // 1 point per HP dealt to other players
   SCORE_KILL: 100,
-  SCORE_WIN: 150,
+  SCORE_WIN: 150,        // last car alive (or highest HP on timeout)
+  SCORE_PER_SURVIVAL_S: 2, // per second still in the round (alive at 45 s = 90). Performance score = all round scores summed
 
   // Server bots (testing alone and the TEST room)
   BOT_TILT_MAX: 0.7,     // below FLIP_TILT, so bots never tip over

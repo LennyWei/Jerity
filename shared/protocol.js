@@ -112,6 +112,8 @@ export const EVENT = {
  * @property {string|null} hostId
  * @property {string} [map]           a key of MAPS (shared/constants.js); the arena for the next round
  * @property {string} state           one of ROOM_STATE
+ * @property {number} [round]         while a match is on: the round in play (or just finished), from 1
+ * @property {number} [rounds]        ...out of this many (ROUNDS_PER_MATCH)
  * @property {LobbyPlayer[]} players
  */
 
@@ -129,7 +131,7 @@ export const EVENT = {
  */
 
 /**
- * @typedef {Object} Snapshot         server -> everyone in room, 20 Hz
+ * @typedef {Object} Snapshot         server -> everyone in room, SNAP_HZ (30 Hz)
  * @property {number} t               server time in ms
  * @property {CarSnap[]} cars
  * @property {Object[]} events        EVENT objects since the last snapshot, each with a `type`
@@ -142,13 +144,29 @@ export const EVENT = {
  * @property {string} name
  * @property {number} kills
  * @property {number} damage          total damage dealt to other players
- * @property {number} score
+ * @property {number} [survived]      seconds in the round before being knocked out (or to the end)
+ * @property {number} score           damage + KOs + the win + survival (SCORE_* in config.js)
+ */
+
+/**
+ * @typedef {Object} MatchRow         one player's totals over the match's rounds so far
+ * @property {string} id
+ * @property {string} name
+ * @property {number} score           performance score: the player's round scores summed
+ * @property {number} wins            rounds won (last alive)
+ * @property {number} kills
+ * @property {number} damage
+ * @property {number} survived        seconds, all rounds
  */
 
 /**
  * @typedef {Object} RoundEnd
  * @property {string|null} winnerId    last car alive (or highest HP on timeout); null on draw
- * @property {LeaderRow[]} leaderboard sorted by score, highest first
+ * @property {LeaderRow[]} leaderboard this round, sorted by score, highest first
+ * @property {number} [round]          the round that just ended, from 1
+ * @property {number} [rounds]         rounds in the match (ROUNDS_PER_MATCH)
+ * @property {boolean} [final]         the match is over: show the final standings
+ * @property {MatchRow[]} [match]      match standings so far, sorted by performance score
  */
 
 // ---------------------------------------------------------------------------

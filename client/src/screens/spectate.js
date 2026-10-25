@@ -6,6 +6,7 @@
 
 import { h, joinUrl, renderQr } from '../ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
+import { CONFIG } from '../../../shared/config.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
@@ -48,10 +49,17 @@ export function mount(root, { net, code, onError }) {
     net.on(S2C.SNAP, (s) => interp.push(s)),
     net.on(S2C.ROUND_END, (r) => {
       const name = lobby?.players.find((p) => p.id === r.winnerId)?.name;
+      const final = r.final && r.match?.length > 0; // the match is over: final standings by performance score
+      const round = typeof r.round === 'number' && !final ? ` round ${r.round}` : '';
       ended = r;
-      status.replaceChildren(h('h2', {}, r.winnerId ? `${name || 'Someone'} wins!` : 'Draw!'),
-        ...r.leaderboard.slice(0, 5).map((row, i) => h('p.muted', {}, `${i + 1}. ${row.name} · ${row.score}`)));
-      setTimeout(() => { if (ended === r) { ended = null; interp.reset(); showStatus(); } }, 5000);
+      status.replaceChildren(...[
+        h('h2', {}, final ? `${r.match[0].name} wins the match!` : r.winnerId ? `${name || 'Someone'} wins${round}!` : 'Draw!'),
+        round && h('p.muted', {}, `Round ${r.round} of ${r.rounds}`),
+        final && h('p.muted', {}, `Final standings · performance score after ${r.round} rounds`),
+        ...(final ? r.match : r.leaderboard).slice(0, 5).map((row, i) => h('p.muted', {}, `${i + 1}. ${row.name} · ${row.score}`)),
+      ].filter(Boolean));
+      setTimeout(() => { if (ended === r) { ended = null; interp.reset(); showStatus(); } },
+        final ? CONFIG.MATCH_RESULTS_MS : CONFIG.RESULTS_MS);
     }),
   ];
 

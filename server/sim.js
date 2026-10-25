@@ -15,6 +15,7 @@ import {
 import { CONFIG } from '../shared/config.js';
 import { createGame } from './game.js';
 import { botInput } from './bots.js';
+import { roundScore } from './mechanics.js';
 
 // These driving checks describe car-style driving (launch, turning radius); omni is checked separately.
 CONFIG.DRIVE_MODE = 'car';
@@ -256,6 +257,15 @@ const headonDmg = v => CONFIG.DMG_K * v * v * CONFIG.HEADON_MULT; // from the ot
   check('kill: killer gets the buff', kill?.buff === wantBuff && a.buff === wantBuff, `event ${kill?.buff}, car ${a.buff}`);
   const wreck = game.snapshot().cars.find(c => c.id === 'c1');
   check('kill: wreck stays in snapshots (for the KO effect)', wreck?.s === CAR_STATE.DEAD && !b.body, JSON.stringify(wreck));
+}
+{
+  // Survival time (part of each round's score): a knocked-out car stops counting when it dies.
+  const { game } = crash({ x: 28.35, v: 5 }, { x: 30, a: NORTH }, { hpA: 70, hpB: 5 });
+  const out = game.survivedS('c1'), last = game.survivedS('c0');
+  near('survival: still in the round = all of it', last, game.now / 1000, 0.001, 's');
+  check(`survival: knocked out stops counting (${out.toFixed(2)} s of ${last.toFixed(2)} s)`, out > 0 && out < last / 2, `${out}`);
+  near('round score: 10 s survived, nothing else', roundScore({ damage: 0, kills: 0, won: false, survived: 10 }),
+    10 * CONFIG.SCORE_PER_SURVIVAL_S, 0, 'pts');
 }
 
 console.log('\nKnockback (no grinding, no sliding along, room to steer past)');

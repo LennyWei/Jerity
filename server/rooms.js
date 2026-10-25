@@ -1,5 +1,5 @@
 // server/rooms.js
-// Room lifecycle: codes, join/leave, colors, ready, host start, countdown, round end, scoring,
+// Room lifecycle: codes, join/leave, colors, ready, host start, countdown, rounds and matches, scoring,
 // and the always-on TEST room. Lifted from fake.js; the game itself lives in game.js.
 //
 // createRooms(io) starts the tick and snapshot loops and returns { attach, codes }:
@@ -11,11 +11,11 @@ import {
 import { MIN_PLAYERS, MAX_PLAYERS, NAME_MAX, MAPS, DEFAULT_MAP } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { createGame } from './game.js';
-import { liveScore } from './mechanics.js';
+import { roundScore } from './mechanics.js';
 import { botInput } from './bots.js';
 
 // Server-only details, not tuning.
-const TEST_CODE = 'TEST';    // always running, rounds loop; join it to get a car immediately
+const TEST_CODE = 'TEST';    // always running, matches loop; join it to get a car immediately
 const TEST_BOTS = 3;
 const MAX_CATCHUP_TICKS = 5; // after a stall (GC, laptop sleep), drop time instead of fast-forwarding
 
@@ -46,6 +46,7 @@ export function createRooms(io) {
       state: ROOM_STATE.LOBBY,
       players: new Map(), // id -> player, in join order (the oldest human inherits host)
       game: null,         // set from countdown to the end of the results screen
+      match: null,        // { round, totals: id -> match totals } from Start to the final standings
       timers: [],
     };
     rooms.set(code, room);
@@ -85,6 +86,7 @@ export function createRooms(io) {
       hostId: room.hostId,
       map: room.map,
       state: room.state,
+      ...(room.match ? { round: room.match.round, rounds: CONFIG.ROUNDS_PER_MATCH } : {}),
       players: [...room.players.values()].map(p => ({
         id: p.id, name: p.name, color: p.color, ready: p.ready, ...(p.isBot ? { bot: true } : {}),
       })),
@@ -139,11 +141,22 @@ export function createRooms(io) {
   }
 
   // ---------------------------------------------------------------------------
-  // Round flow
+  // Round flow: Start plays a match of ROUNDS_PER_MATCH rounds, then the final standings
   // ---------------------------------------------------------------------------
+
+  function startMatch(room) {
+    room.match = { round: 0, totals: new Map() };
+    startCountdown(room);
+  }
+
+  /** Over after the last round, or early when fewer than 2 players are left to play one. */
+  function matchOver(room) {
+    return !room.match || room.match.round >= CONFIG.ROUNDS_PER_MATCH || room.players.size < 2;
+  }
 
   function startCountdown(room) {
     clearTimers(room);
+    room.match.round += 1;
     room.state = ROOM_STATE.COUNTDOWN;
     for (const p of room.players.values()) p.input = { ...NO_INPUT };
     room.game = createGame([...room.players.values()], room.map);
@@ -173,26 +186,57 @@ export function createRooms(io) {
     const winnerId = game.winnerId();
     const leaderboard = [...room.players.values()].map(p => {
       const st = game.stats.get(p.id) || { kills: 0, damage: 0 };
-      return {
+      const row = {
         id: p.id,
         name: p.name,
         kills: st.kills,
         damage: Math.round(st.damage),
-        score: Math.round(liveScore(st) + (p.id === winnerId ? CONFIG.SCORE_WIN : 0)),
+        survived: Math.round(game.survivedS(p.id) * 10) / 10,
       };
+      const won = p.id === winnerId;
+      row.score = Math.round(roundScore({ ...row, won }));
+      addToMatch(room.match, row, won);
+      return row;
     }).sort((a, b) => b.score - a.score);
 
-    io.to(room.code).emit(S2C.ROUND_END, { winnerId, leaderboard });
+    const final = matchOver(room);
+    io.to(room.code).emit(S2C.ROUND_END, {
+      winnerId, leaderboard,
+      round: room.match.round, rounds: CONFIG.ROUNDS_PER_MATCH, final, match: standings(room),
+    });
     broadcastLobby(room);
-    later(room, () => nextRound(room), CONFIG.RESULTS_MS);
+    later(room, () => nextRound(room), final ? CONFIG.MATCH_RESULTS_MS : CONFIG.RESULTS_MS);
   }
 
-  // After the results: TEST loops forever, other rooms go back to the lobby.
+  const NO_TOTALS = { wins: 0, kills: 0, damage: 0, survived: 0, score: 0 };
+
+  function addToMatch(match, row, won) {
+    const t = match.totals.get(row.id) || NO_TOTALS;
+    match.totals.set(row.id, {
+      wins: t.wins + (won ? 1 : 0),
+      kills: t.kills + row.kills,
+      damage: t.damage + row.damage,
+      survived: t.survived + row.survived,
+      score: t.score + row.score,
+    });
+  }
+
+  /** Everyone still in the room, by performance score (the round scores summed); ties: wins, KOs, damage. */
+  function standings(room) {
+    return [...room.players.values()].map(p => {
+      const t = room.match.totals.get(p.id) || NO_TOTALS;
+      return { id: p.id, name: p.name, ...t, survived: Math.round(t.survived * 10) / 10 };
+    }).sort((a, b) => (b.score - a.score) || (b.wins - a.wins) || (b.kills - a.kills) || (b.damage - a.damage));
+  }
+
+  // After the results: the match's next round. After the last one, the lobby (TEST starts a new match).
   function nextRound(room) {
     clearTimers(room);
-    if (room.code === TEST_CODE) return startCountdown(room);
+    if (!matchOver(room)) return startCountdown(room);
+    if (room.code === TEST_CODE) return startMatch(room);
     room.state = ROOM_STATE.LOBBY;
     room.game = null;
+    room.match = null;
     for (const p of room.players.values()) if (!p.isBot) p.ready = false;
     broadcastLobby(room);
   }
@@ -340,7 +384,7 @@ export function createRooms(io) {
       const min = room.devRoom ? CONFIG.DEV_MIN_PLAYERS : MIN_PLAYERS;
       if (room.players.size < min) return ack({ error: `Need at least ${min} players` });
       ack({ ok: true });
-      startCountdown(room);
+      startMatch(room);
     });
 
     on(C2S.INPUT, (raw) => {
@@ -412,14 +456,14 @@ export function createRooms(io) {
   }
 
   // ---------------------------------------------------------------------------
-  // Always-on TEST room: bots looping rounds
+  // Always-on TEST room: bots looping matches
   // ---------------------------------------------------------------------------
 
   // Off unless TEST_ROOM=on: its bots use CPU nobody is watching (the free Render plan has little).
   if (process.env.TEST_ROOM === 'on') {
     const test = newRoom(TEST_CODE, null, true);
     for (let i = 1; i <= TEST_BOTS; i++) addPlayer(test, `bot${botSeq++}`, `Bot ${i}`, true);
-    startCountdown(test);
+    startMatch(test);
   }
 
   return { attach, codes: () => [...rooms.keys()] };

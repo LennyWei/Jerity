@@ -119,6 +119,12 @@ export function createGame(players, mapId = DEFAULT_MAP) {
     return aliveCars().sort((a, b) => b.hp - a.hp)[0]?.id ?? null;
   }
 
+  /** Seconds a car has been in the round: until it was knocked out, or so far. */
+  function survivedS(id) {
+    const car = cars.get(id);
+    return car ? ((car.diedAt ?? now) - car.bornAt) / 1000 : 0;
+  }
+
   // ---------------------------------------------------------------------------
   // World and cars
   // ---------------------------------------------------------------------------
@@ -191,6 +197,8 @@ export function createGame(players, mapId = DEFAULT_MAP) {
       lastAttacker: null,
       lastHitAt: 0,
       lastWallAt: -Infinity,    // last wall/pillar bump: another one soon after is pressing, not crashing
+      bornAt: now,              // sim time it joined the round, and when it was knocked out: survival time
+      diedAt: null,
     };
     car.body = world.createBody({
       type: 'dynamic',
@@ -494,6 +502,7 @@ export function createGame(players, mapId = DEFAULT_MAP) {
     if (car.hp > 0 || car.s === CAR_STATE.DEAD) return;
     car.hp = 0;
     car.s = CAR_STATE.DEAD;
+    car.diedAt = now;
     world.destroyBody(car.body);
     car.body = null;
 
@@ -516,7 +525,7 @@ export function createGame(players, mapId = DEFAULT_MAP) {
   return {
     cars, stats,
     get now() { return now; },
-    step, snapshot, spawn, remove, setAway, over, winnerId,
+    step, snapshot, spawn, remove, setAway, over, winnerId, survivedS,
   };
 }
 

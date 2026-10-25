@@ -70,7 +70,15 @@ export function killReward(maxHp, hp) {
   };
 }
 
-/** 5.5 Score without the win bonus (snapshot `sc`). The leaderboard adds SCORE_WIN. */
+/** 5.5 Score without the win bonus (snapshot `sc`). The round results add the rest (roundScore). */
 export function liveScore({ damage, kills }) {
   return damage * CONFIG.SCORE_PER_DAMAGE + kills * CONFIG.SCORE_KILL;
+}
+
+/**
+ * A round's score: damage and KOs, the win (last alive), and every second survived. A match's
+ * performance score is its round scores summed.
+ */
+export function roundScore({ damage, kills, won, survived }) {
+  return liveScore({ damage, kills }) + (won ? CONFIG.SCORE_WIN : 0) + survived * CONFIG.SCORE_PER_SURVIVAL_S;
 }

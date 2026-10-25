@@ -122,6 +122,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   let lastMine = null;
   let sending = false;
   let lastSnapAt = 0;
+  let roundOf = lobby;        // latest LobbyState: { round, rounds } while a match is on
 
   // Motion permission fallback: lobby should already have asked from a tap.
   if (playerId && input.needsPermission()) motionEl.classList.add('show');
@@ -174,7 +175,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
       interp.push(snap, lastSnapAt);
       trackSpeed(snap);
     }),
-    listen(net, S2C.LOBBY, (l) => { renderer.setPlayers(l.players); renderer.setMap(l.map); names = new Map(l.players.map((p) => [p.id, p.name])); }),
+    listen(net, S2C.LOBBY, (l) => { renderer.setPlayers(l.players); renderer.setMap(l.map); names = new Map(l.players.map((p) => [p.id, p.name])); roundOf = l; }),
     listen(net, S2C.ROUND_END, (res) => {
       stopSending();
       onRoundEnd?.(res);
@@ -267,6 +268,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   }
 
   function banner() {
+    if (count !== null && roundOf?.round) return `Round ${roundOf.round} of ${roundOf.rounds}`;
     if (!playerId) return 'Spectating';
     if (myState === CAR_STATE.DEAD) return "You're out · spectating";
     if (count === null && lastSnapAt && performance.now() - lastSnapAt > 1500) return 'Reconnecting…';
