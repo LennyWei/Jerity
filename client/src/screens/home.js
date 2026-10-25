@@ -96,8 +96,6 @@ export function mount(root, { net, code = '', error = '', onCreate, onJoin }) {
   const el = h('div.screen.center.crt', {},
     h('h1.brand', {}, 'JER', h('span', {}, 'ITY')),
     rink,
-    h('p.tagline', {}, 'Tilt to steer. Ram their side. Last car standing wins.'),
-    helper,
     h('div.stack', {},
       name,
       h('div.row', {}, codeEl, join),
