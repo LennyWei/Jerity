@@ -109,3 +109,106 @@ h2 { margin: 0; font-size: 20px; }
 .room-tag { font-size: 11px; font-weight: 800; letter-spacing: 0.12em; color: var(--accent); background: rgba(255,210,63,0.12); padding: 2px 6px; border-radius: 6px; }
 .room .muted { font-size: 13px; }
 .tag.bot { background: rgba(77,208,225,0.16); color: #4dd0e1; }
+
+/* =========================================================================================
+   Jerity menus (home + lobby): Verity's helper screen. A cheerful old kiosk / kids'-software
+   look on a cream CRT that drains, darkens, tears and reddens as --corrupt (0..1, set by
+   verity-ui.js on <html>) rises. Everything is scoped to .crt; results and spectate keep the
+   dark game look.
+   ========================================================================================= */
+:root { --corrupt: 0; }
+.crt {
+  --bg: #f1ead6;        /* warm CRT cream */
+  --panel: #fffaf0;
+  --panel-2: #e8dfc6;
+  --line: #d3c7aa;
+  --fg: #2b2733;
+  --dim: #6f6979;
+  --accent: #1f9e8f;    /* friendly teal */
+  --sun: #f6b93b;       /* Verity's face */
+  --good: #2f9e6a;
+  --bad: #d23c3c;
+  --friendly: 'Fredoka', 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  --term: 'VT323', ui-monospace, 'Cascadia Mono', Menlo, monospace;
+  position: relative; isolation: isolate; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 40%, var(--bg) 55%, color-mix(in srgb, var(--bg) 70%, #000) 100%);
+  color: var(--fg); font-family: var(--friendly);
+  filter: saturate(calc(1 - var(--corrupt) * 0.85)) contrast(calc(1 + var(--corrupt) * 0.4))
+          brightness(calc(1 - var(--corrupt) * 0.45)) sepia(calc(var(--corrupt) * 0.35));
+  transition: filter 1.5s linear;
+}
+/* scanlines, heavier as he turns */
+.crt::before { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 20;
+  background: repeating-linear-gradient(to bottom, transparent 0 2px,
+    rgb(0 0 0 / calc(0.05 + var(--corrupt) * 0.16)) 2px 3px); }
+/* red bleed creeping in from the edges */
+.crt::after { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 21;
+  background: radial-gradient(90% 80% at 50% 45%, transparent 40%, rgb(140 0 16 / calc(var(--corrupt) * 0.55)) 100%);
+  mix-blend-mode: multiply; }
+
+.crt .brand { font-family: var(--friendly); font-weight: 700; letter-spacing: 0.06em; font-size: clamp(40px, 13vw, 64px);
+  color: var(--fg);
+  text-shadow: calc(var(--corrupt) * 4px) 0 rgb(255 0 60 / 0.55), calc(var(--corrupt) * -4px) 0 rgb(0 190 255 / 0.5); }
+.crt .brand span { color: var(--accent); }
+.crt .tagline { font-family: var(--term); font-size: 20px; letter-spacing: 0.04em; }
+.crt .field { background: var(--panel); border-color: var(--line); font-family: var(--friendly); font-weight: 500; }
+.crt .field:focus { border-color: var(--accent); }
+.crt .field.code, .crt .room-code, .crt .room-tag, .crt .tag { font-family: var(--term); letter-spacing: 0.14em; }
+.crt .field.code { font-size: 24px; }
+.crt .btn { background: var(--panel-2); color: var(--fg); font-family: var(--friendly); font-weight: 600;
+  border-radius: 999px; box-shadow: 0 3px 0 color-mix(in srgb, var(--panel-2) 60%, #000); }
+.crt .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 color-mix(in srgb, var(--panel-2) 60%, #000); }
+.crt .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 3px 0 color-mix(in srgb, var(--accent) 55%, #000); }
+.crt .btn.good { background: var(--good); color: #fff; }
+.crt .btn.ghost { background: transparent; box-shadow: none; border: 2px dashed var(--line); color: var(--dim); }
+.crt .card, .crt .room { background: var(--panel); border: 2px solid var(--line); }
+.crt .player { background: var(--panel-2); }
+.crt .room-code { color: var(--accent); font-size: 52px; }
+.crt .room-tag { color: var(--fg); background: var(--sun); }
+.crt .tag.host { background: var(--sun); color: var(--fg); }
+.crt .tag.ready { background: color-mix(in srgb, var(--good) 22%, transparent); color: var(--good); }
+.crt .tag.bot { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.crt .divider { font-family: var(--term); font-size: 18px; }
+.crt .qr { border: 3px solid var(--fg); }
+
+/* Verity: face + speech bubble */
+.verity { width: min(420px, 100%); display: flex; align-items: flex-end; gap: 12px; min-height: 84px; }
+.v-face { width: 72px; flex: none; }
+.v-face svg { display: block; width: 100%; height: auto; overflow: visible; }
+.v-head { fill: var(--sun); stroke: var(--fg); stroke-width: 3; }
+.v-eye { fill: #fff; stroke: var(--fg); stroke-width: 2.5; }
+.v-pupil { fill: var(--fg); transition: cx 0.15s, cy 0.15s; }
+.v-mouth { fill: none; stroke: var(--fg); stroke-width: 4; stroke-linecap: round; transition: d 0.6s; }
+.v-bubble { position: relative; flex: 1; min-width: 0; background: var(--panel); border: 3px solid var(--fg);
+  border-radius: 18px; padding: 12px 14px; font-size: 17px; font-weight: 500; line-height: 1.35; min-height: 3.2em; }
+.v-bubble::before { content: ''; position: absolute; left: -12px; bottom: 14px; border: 9px solid transparent;
+  border-right-color: var(--fg); border-left: 0; }
+.v-text::after { content: '▍'; margin-left: 2px; opacity: 0.6; animation: v-blink 1s steps(1) infinite; }
+@keyframes v-blink { 50% { opacity: 0; } }
+/* the wrong line that flashes for a split second */
+.v-whisper .v-bubble { background: #0a0a0a; color: #ff2a3a; border-color: #ff2a3a; font-family: var(--term); font-size: 22px; letter-spacing: 0.08em; }
+/* as he turns: terminal voice, hollow eyes, then red pupils */
+[data-verity-stage="2"] .v-bubble, [data-verity-stage="3"] .v-bubble { font-family: var(--term); font-size: 21px; letter-spacing: 0.04em; }
+[data-verity-stage="2"] .v-eye, [data-verity-stage="3"] .v-eye { fill: #111; }
+[data-verity-stage="2"] .v-pupil { fill: #fff; }
+[data-verity-stage="3"] .v-pupil { fill: #ff2a3a; filter: drop-shadow(0 0 3px #ff2a3a); }
+[data-verity-stage="3"] .v-head { stroke-dasharray: 6 3; }
+
+/* VHS tear: a short jump when html.v-glitch is on (verity-ui.js) */
+.v-glitch .crt { transform: translateX(calc(-3px - var(--corrupt) * 9px)) skewX(calc(var(--corrupt) * -3deg)); }
+.v-glitch .crt .brand { text-shadow: 10px 0 rgb(255 0 60 / 0.8), -10px 0 rgb(0 190 255 / 0.7); }
+.v-glitch .crt .verity { clip-path: inset(18% 0 34% 0); transform: translateX(14px); }
+[data-verity-stage="3"] .crt .brand { animation: v-shake 2.4s infinite; }
+@keyframes v-shake { 0%, 92%, 100% { transform: none; } 94% { transform: translate(2px, -1px); } 96% { transform: translate(-3px, 1px); } 98% { transform: translate(1px, 0); } }
+@media (prefers-reduced-motion: reduce) {
+  .crt { transition: none; }
+  [data-verity-stage="3"] .crt .brand, .v-text::after { animation: none; }
+}
+/* Last stage: the screen dies. Near-black, dim red, his face drained. */
+[data-verity-stage="3"] .crt {
+  --bg: #17110f; --panel: #211816; --panel-2: #2b201d; --line: #4a2f2a;
+  --fg: #e6d3c8; --dim: #9a7f75; --accent: #b3262d; --sun: #8c7a63;
+  filter: saturate(0.55) contrast(1.25) brightness(0.92);
+}
+[data-verity-stage="3"] .crt .btn.primary { color: #f3e2d8; }
+[data-verity-stage="3"] .crt .room-tag, [data-verity-stage="3"] .crt .tag.host { color: #17110f; }

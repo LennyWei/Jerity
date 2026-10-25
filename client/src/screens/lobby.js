@@ -9,6 +9,7 @@ import { h, colorOf, joinUrl, renderQr } from '../ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
 import { MIN_PLAYERS, MAX_PLAYERS } from '../../../shared/constants.js';
 import { calibrate, requestMotionPermission } from './game.js';
+import { mountVerity, LINES } from '../verity-ui.js';
 
 export function mount(root, { net, playerId, lobby, onLeave }) {
   let state = lobby;
@@ -78,8 +79,10 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
 
   const off = net.on(S2C.LOBBY, (l) => { state = l; err.textContent = ''; render(); });
 
-  const el = h('div.screen', {},
+  const helper = h('div');
+  const el = h('div.screen.crt', {},
     h('div.row', { style: { width: 'min(760px, 100%)' } }, h('h2', {}, 'Lobby'), h('div', { style: { flex: 'none' } }, leave)),
+    helper,
     h('div.lobby', {},
       h('div.card.code-card', {},
         h('div.muted', {}, 'Room code'),
@@ -92,6 +95,7 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
   root.append(el);
   renderQr(qr, joinUrl(state.code));
   render();
+  const verity = mountVerity(helper, { lines: LINES.lobby, name: () => state.players.find((p) => p.id === playerId)?.name });
 
-  return () => { off(); el.remove(); };
+  return () => { off(); verity.destroy(); el.remove(); };
 }
