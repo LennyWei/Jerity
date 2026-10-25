@@ -84,9 +84,26 @@ export function createRooms(io) {
       hostId: room.hostId,
       state: room.state,
       players: [...room.players.values()].map(p => ({
-        id: p.id, name: p.name, color: p.color, ready: p.ready,
+        id: p.id, name: p.name, color: p.color, ready: p.ready, ...(p.isBot ? { bot: true } : {}),
       })),
     };
+  }
+
+  // Home screen list: rooms with people in them (plus TEST), joinable ones first.
+  function roomList() {
+    return [...rooms.values()]
+      .filter(room => room.code === TEST_CODE || humans(room).length > 0)
+      .map(room => ({
+        code: room.code,
+        host: room.players.get(room.hostId)?.name || '',
+        players: room.players.size,
+        humans: humans(room).length,
+        max: MAX_PLAYERS,
+        state: room.state,
+        joinable: room.players.size < MAX_PLAYERS && (room.state === ROOM_STATE.LOBBY || room.devRoom),
+        ...(room.code === TEST_CODE ? { practice: true } : {}),
+      }))
+      .sort((a, b) => (b.joinable - a.joinable) || (!!a.practice - !!b.practice) || (b.humans - a.humans));
   }
 
   function broadcastLobby(room) {
@@ -349,6 +366,35 @@ export function createRooms(io) {
       broadcastLobby(room);
     }
     on(C2S.LEAVE, () => leave());
+
+    on(C2S.LIST_ROOMS, (_msg, ack) => ack({ rooms: roomList() }));
+
+    // Host fills empty seats with bots (or takes them out) while in the lobby. Bots count toward
+    // MIN_PLAYERS, so a host with fewer than 4 friends can still start.
+    function hostLobby(ack) {
+      const room = myRoom();
+      if (!room || room.hostId !== pid()) { ack({ error: 'Only the host can change bots' }); return null; }
+      if (room.state !== ROOM_STATE.LOBBY) { ack({ error: 'Bots can only change in the lobby' }); return null; }
+      return room;
+    }
+    on(C2S.ADD_BOT, (_msg, ack) => {
+      const room = hostLobby(ack);
+      if (!room) return;
+      if (room.players.size >= MAX_PLAYERS) return ack({ error: 'Room is full' });
+      const n = [...room.players.values()].filter(p => p.isBot).length + 1;
+      addPlayer(room, `bot${botSeq++}`, `Bot ${n}`, true);
+      ack({ ok: true });
+      broadcastLobby(room);
+    });
+    on(C2S.REMOVE_BOT, (_msg, ack) => {
+      const room = hostLobby(ack);
+      if (!room) return;
+      const bot = [...room.players.values()].filter(p => p.isBot).pop(); // newest bot
+      if (!bot) return ack({ error: 'No bots to remove' });
+      room.players.delete(bot.id);
+      ack({ ok: true });
+      broadcastLobby(room);
+    });
     socket.on('disconnect', drop);
   }
 

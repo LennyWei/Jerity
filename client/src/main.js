@@ -40,7 +40,7 @@ function goHome(code = '', error = '') {
   if (session.code) net.emit(C2S.LEAVE, {});
   Object.assign(session, { playerId: null, code: null, lobby: null });
   history.replaceState(null, '', (code ? `/join/${code}` : '/') + keepQuery());
-  show('home', (root) => home.mount(root, { code, error, onCreate, onJoin }));
+  show('home', (root) => home.mount(root, { net, code, error, onCreate, onJoin }));
 }
 
 function showLobby() {
@@ -105,11 +105,20 @@ net.on(S2C.COUNTDOWN, ({ seconds }) => {
   if (session.playerId && seconds > 0 && (screen === 'lobby' || screen === 'results')) showGame(seconds);
 });
 
-// Connection: show it when it drops; on reconnect, rejoin as the same player. The server keeps
-// our car (as a ghost) for DISCONNECT_GRACE_MS, even mid-round; the key proves it is us.
+// Connection. Before the first connect, say we're connecting; after a few seconds, that the
+// server may be waking up (Render's free plan sleeps). When it drops, say so; on reconnect,
+// rejoin as the same player: the server keeps our car (a ghost) for DISCONNECT_GRACE_MS, even
+// mid-round, and the rejoin key proves it is us.
 let everConnected = false;
+banner.className = 'banner info';
+banner.textContent = 'Connecting to the game server…';
+setTimeout(() => {
+  if (!everConnected) banner.textContent = 'Waking up the game server… this can take up to a minute';
+}, 3000);
 net.onStatus(async (up) => {
-  banner.textContent = up ? '' : everConnected ? 'Connection lost · reconnecting…' : '';
+  if (!everConnected && !up) return; // still waking: keep the waking message
+  banner.className = 'banner';
+  banner.textContent = up ? '' : 'Connection lost · reconnecting…';
   if (!up) return;
   if (!everConnected) { everConnected = true; return; }
   if (!session.code) return;

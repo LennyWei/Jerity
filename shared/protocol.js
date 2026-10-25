@@ -19,6 +19,9 @@ export const C2S = {
   START:       'start',      // {}                         host only, ack -> { ok } | { error }
   INPUT:       'input',      // { seq, tilt, throttle, accel, taps } 30 Hz while playing
   LEAVE:       'leave',      // {}
+  LIST_ROOMS:  'listRooms',  // {}                         ack -> { rooms: RoomInfo[] } (home screen list)
+  ADD_BOT:     'addBot',     // {}                         host only, in the lobby, ack -> { ok } | { error }
+  REMOVE_BOT:  'removeBot',  // {}                         host only, in the lobby: removes the newest bot
 };
 
 // Server -> client
@@ -86,6 +89,20 @@ export const EVENT = {
  * @property {string} name
  * @property {number} color           index into PLAYER_COLORS, unique in the room
  * @property {boolean} ready
+ * @property {boolean} [bot]           a server bot (hosts can add / remove them in the lobby)
+ */
+
+/**
+ * @typedef {Object} RoomInfo          one row of the home screen's open-rooms list
+ * @property {string} code
+ * @property {string} host             host's name ('' if none)
+ * @property {number} players          including bots
+ * @property {number} humans
+ * @property {number} max              MAX_PLAYERS
+ * @property {string} state            one of ROOM_STATE
+ * @property {boolean} joinable        not full, and in the lobby (or a practice room, which takes
+ *                                     players mid-round)
+ * @property {boolean} [practice]      the always-on TEST room
  */
 
 /**

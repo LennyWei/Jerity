@@ -7,8 +7,11 @@
 //   const res = await net.request(C2S.JOIN_ROOM, { code, name }); // ack as a promise
 //
 // The server is the page's own origin (the game server serves the client). A page hosted
-// elsewhere, like Vercel, can point at the game server with ?server=https://host or
-// VITE_SERVER_URL at build time.
+// elsewhere, like Vercel, points at the game server (e.g. Render) with VITE_SERVER_URL at build
+// time, or ?server=https://host in the address.
+//
+// A sleeping server (Render's free plan) can take about a minute to wake, so requests wait for
+// the connection first instead of failing after a few seconds.
 
 import { io } from 'socket.io-client';
 
@@ -33,8 +36,20 @@ export function createNet(url = SERVER) {
       else socket.emit(event, payload ?? {});
     },
 
-    /** emit with an ack, as a promise. Resolves { error } on timeout instead of hanging. */
-    request(event, payload, timeoutMs = 6000) {
+    /**
+     * emit with an ack, as a promise. Waits up to connectMs for the connection (a sleeping
+     * server waking up), then timeoutMs for the answer. Resolves { error } instead of hanging.
+     */
+    async request(event, payload, timeoutMs = 6000, connectMs = 75000) {
+      if (!socket.connected) {
+        const up = await new Promise((resolve) => {
+          const done = (ok) => { clearTimeout(timer); socket.off('connect', onUp); resolve(ok); };
+          const onUp = () => done(true);
+          const timer = setTimeout(() => done(false), connectMs);
+          socket.on('connect', onUp);
+        });
+        if (!up) return { error: 'Can’t reach the game server. Check your connection and try again.' };
+      }
       return new Promise((resolve) => {
         socket.timeout(timeoutMs).emit(event, payload ?? {}, (err, res) => {
           resolve(err ? { error: 'No answer from the server. Check your connection.' } : res ?? {});
