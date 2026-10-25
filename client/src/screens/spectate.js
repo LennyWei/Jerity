@@ -8,6 +8,7 @@ import { h, joinUrl, renderQr } from '../ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
+import { mountVerity, corruption, LINES } from '../verity-ui.js';
 
 export function mount(root, { net, code, onError }) {
   const canvas = h('canvas');
@@ -19,7 +20,12 @@ export function mount(root, { net, code, onError }) {
   root.append(el);
   renderQr(qr, joinUrl(code));
 
-  const renderer = createRenderer(canvas, { showHud: false });
+  const renderer = createRenderer(canvas, { showHud: false, corrupt: corruption });
+  // Verity announces the match on the big screen.
+  const helper = h('div.spectate-verity');
+  el.append(helper);
+  const verity = mountVerity(helper, { lines: LINES.spectate, quiet: true });
+  const nameOf = (id) => lobby?.players.find((p) => p.id === id)?.name || 'someone';
   const interp = createInterp();
   let lobby = null, ended = null, alive = true, lastCount = 0;
 
@@ -34,7 +40,7 @@ export function mount(root, { net, code, onError }) {
   };
 
   const offs = [
-    net.on(S2C.LOBBY, (l) => { lobby = l; renderer.setPlayers(l.players); showStatus(); }),
+    net.on(S2C.LOBBY, (l) => { lobby = l; renderer.setPlayers(l.players); renderer.setMap(l.map); showStatus(); }),
     net.on(S2C.COUNTDOWN, ({ seconds }) => {
       if (seconds > lastCount) { ended = null; interp.reset(); showStatus(); } // a new round's countdown
       lastCount = seconds;
@@ -61,7 +67,9 @@ export function mount(root, { net, code, onError }) {
     if (!alive) return;
     raf = requestAnimationFrame(frame);
     const view = interp.sample(now);
-    renderer.addEvents(interp.takeEvents(), view);
+    const events = interp.takeEvents();
+    renderer.addEvents(events, view);
+    verity.react(events, { me: null, nameOf });
     renderer.draw(view, now);
   };
   raf = requestAnimationFrame(frame);
@@ -73,6 +81,7 @@ export function mount(root, { net, code, onError }) {
     offs.forEach((f) => f());
     offStatus();
     renderer.destroy();
+    verity.destroy();
     el.remove();
   };
 }
