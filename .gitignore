@@ -2,3 +2,4 @@ node_modules/
 client/dist/
 .env
 npm-debug.log*
+verity-output.mp3
