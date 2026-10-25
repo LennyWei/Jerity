@@ -1,21 +1,24 @@
 // client/src/sfx.js
 // Game sound effects, synthesized with the Web Audio API (no audio files): countdown beeps and
 // GO, hit thumps that get heavier with damage, the head-on clang, wall bumps, the KO explosion,
-// flip and recover, and the round-win and match-win stings.
+// flip and recover, the round-win and match-win stings, and a soft driving hum underneath.
 //
 //   playEvents(events, { all: true, view })        // laptop: every arena event, panned left/right
 //   playEvents(events, { me: playerId, small: true }) // phone: only events you are in
+//   playDriving(view, { all: true })                // each frame: the hum of the whole arena...
+//   playDriving(view, { me: playerId, small: true }) // ...or of your own car
+//   stopDriving()                                   // leaving the arena screen
 //   playCountdown(seconds, { small })               // 4, 3, 2, 1: beep; 0: GO
 //   playRoundEnd({ won, final, small })             // round sting, or the match fanfare
 //
 // small: a phone speaker has no deep bass, so the low thumps and booms sit higher there.
 // Everything respects the mute switch (the corner ♪, jerity-audio.js) and drops to DUCK while
-// Jerity runs her exchange (her voice, and the players' microphones while she listens).
+// Jerity runs an exchange (his voice, and the players' microphones while he listens).
 // Browsers start audio locked: the first tap or key anywhere unlocks it (the spectator page
 // shows a prompt until then, see onAudioReady).
 
-import { ARENA } from '../../shared/constants.js';
-import { EVENT, HIT_KIND, S2C } from '../../shared/protocol.js';
+import { ARENA, CARS, DEFAULT_CAR, SCALE } from '../../shared/constants.js';
+import { CAR_STATE, EVENT, HIT_KIND, ROOM_STATE, S2C } from '../../shared/protocol.js';
 import { soundMuted } from './jerity-audio.js';
 import { net } from './net.js';
 
@@ -23,6 +26,9 @@ const VOLUME = 0.7;
 const DUCK = 0.3;           // level while Jerity is talking or listening
 const MAX_BURST = 10;       // sounds started within BURST_S; a pile-up beyond that is skipped
 const BURST_S = 0.15;
+const DRIVE_LEVEL = 0.13;   // the driving hum at top speed: about 14 dB under a crash, filling the quiet
+const DRIVE_IDLE = 0.4;     // share of that while the cars sit still with their motors on
+const DRIVE_FADE_S = 0.35;  // the hum dies away this long after the last frame (tab hidden, screen left)
 
 let ctx = null, master = null, noise = null;
 let ducked = false;
@@ -85,7 +91,7 @@ export function onAudioLocked(fn) {
   return () => removeEventListener('visibilitychange', check);
 }
 
-// While Jerity runs her round-opening exchange, everything else is quieter.
+// While Jerity runs an exchange, everything else is quieter.
 net.on(S2C.JERITY_STATE, (s) => { ducked = !!s?.phase && s.phase !== 'idle'; });
 net.on(S2C.LOBBY, (l) => { ducked = !!l?.jerity?.phase && l.jerity.phase !== 'idle'; });
 
@@ -287,4 +293,109 @@ export function playEvents(events, { me = null, all = false, small = false, view
         break;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Driving hum
+// ---------------------------------------------------------------------------
+
+const TOP_SPEED = CARS[DEFAULT_CAR].maxSpeed * SCALE; // world units per second
+let drive = null;           // the hum's nodes, built on first use and left running
+let roundLive = false;      // countdown, round or victory lap (not the results or the lobby)
+let heard = 0;              // smoothed share of top speed the hum is playing
+let last = null;            // { t, at: Map(id -> { x, y }) }: the cars in the previous frame
+
+net.on(S2C.COUNTDOWN, () => { roundLive = true; });
+net.on(S2C.ROUND_END, () => { roundLive = false; });
+net.on(S2C.LOBBY, (l) => { roundLive = l?.state === ROOM_STATE.COUNTDOWN || l?.state === ROOM_STATE.PLAYING; });
+
+/** Glide an AudioParam toward v from t (tau: seconds to get most of the way there). */
+function glide(param, v, t, tau) {
+  param.cancelScheduledValues(t);
+  param.setTargetAtTime(v, t, tau);
+}
+
+/** The hum: a buzzing electric motor (two saws a few cents apart), its whine, and tires on the floor. */
+function driveVoice(small) {
+  if (drive) return drive;
+  const level = ctx.createGain(), pan = ctx.createStereoPanner?.();
+  level.gain.value = 0;
+  const motor = ctx.createBiquadFilter(), motorGain = ctx.createGain();
+  motor.type = 'lowpass';
+  motor.Q.value = 0.9;
+  motorGain.gain.value = 0.45;
+  const saws = [0, 7].map((cents) => {
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.detune.value = cents;
+    o.connect(motor);
+    return o;
+  });
+  motor.connect(motorGain);
+  motorGain.connect(level);
+  const whine = ctx.createOscillator(), whineGain = ctx.createGain();
+  whineGain.gain.value = 0;
+  whine.connect(whineGain);
+  whineGain.connect(level);
+  const roll = ctx.createBufferSource(), rollFilter = ctx.createBiquadFilter(), rollGain = ctx.createGain();
+  roll.buffer = noise;
+  roll.loop = true;
+  rollFilter.type = 'lowpass';
+  rollFilter.frequency.value = small ? 700 : 320;
+  rollGain.gain.value = 0;
+  roll.connect(rollFilter);
+  rollFilter.connect(rollGain);
+  rollGain.connect(level);
+  if (pan) { level.connect(pan); pan.connect(master); } else level.connect(master);
+  saws.forEach((o) => o.start());
+  whine.start();
+  roll.start(0, Math.random() * 1.5);
+  return (drive = { level, pan, motor, saws, whine, whineGain, rollGain });
+}
+
+/**
+ * The driving hum, each frame with the view being drawn: it follows how fast the cars move.
+ * all: the whole arena as one blended hum (the laptop), leaning toward where the action is;
+ * otherwise only car `me` (a phone). Flipped, dead and disconnected cars are silent. It fades
+ * out by itself when the frames stop, so a hidden tab never drones on.
+ */
+export function playDriving(view, { me = null, all = false, small = false } = {}) {
+  if (ctx?.state !== 'running') { last = null; return; }
+  const t = ctx.currentTime, at = new Map();
+  const dt = view && last && view.t > last.t ? (view.t - last.t) / 1000 : 0;
+  let sum = 0, n = 0, px = 0, pw = 0;
+  for (const c of view && roundLive ? view.cars : []) {
+    at.set(c.id, { x: c.x, y: c.y });
+    if (!(all || c.id === me) || (c.s !== CAR_STATE.ALIVE && c.s !== CAR_STATE.STUNNED)) continue;
+    const p = last?.at.get(c.id);
+    const d = p && dt > 0 && dt < 0.25 ? Math.hypot(c.x - p.x, c.y - p.y) : 0;
+    const f = d > TOP_SPEED * 0.5 ? 0 : Math.min(1.2, d / (dt || 1) / TOP_SPEED); // a swap or respawn jump isn't speed
+    sum += f * f;
+    n++;
+    px += (c.x / ARENA.W) * (f + 0.05);
+    pw += f + 0.05;
+  }
+  last = view ? { t: view.t, at } : null;
+  const want = n ? Math.sqrt(sum / n) : 0;
+  heard += (want - heard) * (1 - Math.exp(-(dt || 1 / 60) / (want > heard ? 0.12 : 0.3))); // revs up fast, winds down slower
+  const on = n > 0 && !soundMuted();
+  if (!on && !drive) return;
+
+  const v = driveVoice(small), s = Math.min(1, heard), hz = (small ? 108 : 52) * (1 + 1.15 * s);
+  v.saws.forEach((o) => glide(o.frequency, hz, t, 0.06));
+  glide(v.motor.frequency, (small ? 520 : 240) + (small ? 1300 : 800) * s, t, 0.08);
+  glide(v.whine.frequency, hz * 6.3, t, 0.06);
+  glide(v.whineGain.gain, 0.02 + 0.14 * s * s, t, 0.1);
+  glide(v.rollGain.gain, 2.4 * s, t, 0.1);
+  if (v.pan) glide(v.pan.pan, all && pw ? Math.max(-0.3, Math.min(0.3, ((px / pw) * 2 - 1) * 0.4)) : 0, t, 0.3);
+  const busy = all ? 0.75 + 0.25 * Math.min(1, n / 4) : 1;
+  glide(v.level.gain, on ? DRIVE_LEVEL * (DRIVE_IDLE + (1 - DRIVE_IDLE) * s) * busy * (ducked ? DUCK : 1) : 0, t, 0.1);
+  v.level.gain.setTargetAtTime(0, t + DRIVE_FADE_S, 0.15); // the next frame cancels this
+}
+
+/** Leaving the arena screen: the hum dies away now. */
+export function stopDriving() {
+  last = null;
+  heard = 0;
+  if (drive) glide(drive.level.gain, 0, ctx.currentTime, 0.08);
 }

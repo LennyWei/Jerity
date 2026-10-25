@@ -21,7 +21,7 @@ import { createInterp } from '../interp.js';
 import * as input from '../input.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
 import { connectJerity } from '../jerity-round.js';
-import { playEvents, playCountdown, playRoundEnd } from '../sfx.js';
+import { playEvents, playDriving, stopDriving, playCountdown, playRoundEnd } from '../sfx.js';
 import { victorySplash } from './results.js';
 import { colorOf } from '../ui.js';
 
@@ -326,6 +326,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     const events = interp.takeEvents();
     renderer.addEvents(events, view);
     playEvents(events, { me: playerId, small: true }); // a phone only sounds the events you are in
+    playDriving(view, { me: playerId, small: true });  // and the hum of your own car
     verity.react(events, { me: playerId, nameOf });
     const flip = updateOwnState();
     const showTilt = !!playerId && myState !== CAR_STATE.DEAD;
@@ -351,6 +352,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   return function unmount() {
     alive = false;
     cancelAnimationFrame(raf);
+    stopDriving();
     clearTimeout(goTimer);
     stopSending();
     unbind();
