@@ -93,7 +93,8 @@ The voice uses `FISH_AUDIO_VOICE_ID`; `FISH_AUDIO_MODEL` optionally overrides th
 existing `s2.1-pro-free` model. Missing credentials must be set on Render, not only
 in a local `.env` or on Vercel.
 
-Action durations and HP amounts are clamped by `server/game.js`. `swap_positions`
+Action durations are clamped to 8–16 seconds, damage to 50–100 HP, and healing to
+100–200 HP (without exceeding max HP) by `server/game.js`. `swap_positions`
 accepts the AI's two-ID target array. `remove_walls` disables interior obstacles
 and hides them until they return; the arena boundary stays in place.
 `execute_player` remains limited to the last quarter of a round, so it is excluded

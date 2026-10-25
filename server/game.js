@@ -598,7 +598,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
   const targets = Array.isArray(ruling.target) ? ruling.target : [ruling.target, ruling.target2];
   const car = cars.get(targets[0]);
   const bounded = (value, fallback, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
-  const duration = bounded(ruling.params?.duration, 5, 2, 10) * 1000;
+  const duration = bounded(ruling.params?.duration, 12, 8, 16) * 1000;
 
   const valid = c => c && c.body && c.hp > 0 &&
     c.s !== CAR_STATE.DEAD &&
@@ -648,7 +648,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
       break;
 
     case "heal_player":
-      car.hp = Math.min(car.maxHp, car.hp + bounded(ruling.params?.amount, 30, 15, 30));
+      car.hp = Math.min(car.maxHp, car.hp + bounded(ruling.params?.amount, 150, 100, 200));
       break;
 
     case "boost_player":
@@ -662,7 +662,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
       break;
 
     case "damage_player":
-      applyDamage(car, bounded(ruling.params?.amount, 25, 10, 40), null);
+      applyDamage(car, bounded(ruling.params?.amount, 75, 50, 100), null);
       checkDeath(car);
       break;
 

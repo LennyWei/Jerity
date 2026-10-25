@@ -142,7 +142,7 @@ test('one combined recording batch; before audio completes before action and aft
   await running;
   assert.equal(inputs.length, 2);
   assert.deepEqual(observed, [['listening_cue', BUFF.NONE], ['before_effect', BUFF.NONE], ['after_effect', BUFF.BOOST]]);
-  assert.equal(game.cars.get('a').buffUntil, 3000);
+  assert.equal(game.cars.get('a').buffUntil, 8000);
   assert.equal(game.now, 0);
   assert.equal(cycle.busy, false);
   assert.deepEqual(events.filter(e => e.type === S2C.JERITY_STATE).map(e => e.payload.phase),
@@ -242,14 +242,19 @@ test('listening clips alternate by round, and recording stays closed until the c
 test('game honors bounded parameters, target arrays and obstacle expiry', () => {
   const game = createGame(roster), a = game.cars.get('a'), b = game.cars.get('b');
   assert.equal(game.applyJerityAction({ action: 'boost_player', target: 'a', params: { duration: 99 } }), true);
-  assert.equal(a.buffUntil, 10000);
+  assert.equal(a.buffUntil, 16000);
   game.applyJerityAction({ action: 'freeze_player', target: 'a', params: { duration: -5 } });
-  assert.equal(a.frozenUntil, 2000);
+  assert.equal(a.frozenUntil, 8000);
   const before = a.hp;
   game.applyJerityAction({ action: 'damage_player', target: 'a', params: { amount: 900 } });
-  assert.equal(a.hp, before - 40);
+  assert.equal(a.hp, before - 100);
   game.applyJerityAction({ action: 'heal_player', target: 'a', params: { amount: 19 } });
-  assert.equal(a.hp, before - 21);
+  assert.equal(a.hp, before);
+  game.applyJerityAction({ action: 'damage_player', target: 'a', params: { amount: 1 } });
+  assert.equal(a.hp, before - 50);
+  a.hp = 1;
+  game.applyJerityAction({ action: 'heal_player', target: 'a', params: { amount: 999 } });
+  assert.equal(a.hp, Math.min(a.maxHp, 201));
   const ax = a.x, bx = b.x;
   assert.equal(game.applyJerityAction({ action: 'swap_positions', target: ['a', 'b'] }), true);
   assert.equal(a.x, bx); assert.equal(b.x, ax);
@@ -257,7 +262,7 @@ test('game honors bounded parameters, target arrays and obstacle expiry', () => 
   assert.equal(game.applyJerityAction({ action: 'execute_player', target: 'a' }), false);
   game.applyJerityAction({ action: 'remove_walls', params: { duration: 2 } });
   assert.equal(game.snapshot().obstaclesDisabled, true);
-  for (let i = 0; i < 61; i++) game.step(new Map(), 1 / 30);
+  for (let i = 0; i < 241; i++) game.step(new Map(), 1 / 30);
   assert.equal(game.snapshot().obstaclesDisabled, false);
 });
 
