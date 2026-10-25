@@ -18,7 +18,7 @@ const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
 const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Each page load counts as a visit; coming back starts him further along.
-const visits = (Number(store.get(VISITS_KEY, '0')) || 0) + 1;
+let visits = (Number(store.get(VISITS_KEY, '0')) || 0) + 1;
 store.set(VISITS_KEY, String(visits));
 let extra = Number(store.get(EXTRA_KEY, '0')) || 0;
 let menuSeconds = 0;
@@ -32,6 +32,16 @@ export const stageOf = (c) => (c < 0.25 ? 0 : c < 0.5 ? 1 : c < 0.75 ? 2 : 3);
 export function bumpCorruption(amount) {
   extra = Math.min(1, extra + amount);
   store.set(EXTRA_KEY, extra.toFixed(3));
+  apply();
+}
+
+/** Back to the cheerful start (the game server restarted: a fresh demo). */
+export function resetCorruption() {
+  visits = 1;
+  extra = 0;
+  menuSeconds = 0;
+  store.set(VISITS_KEY, '1');
+  store.set(EXTRA_KEY, '0');
   apply();
 }
 

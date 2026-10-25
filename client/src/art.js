@@ -115,8 +115,9 @@ export function drawWreck(ctx, { w = 40, h = 24 } = {}) {
 /**
  * One obstacle. o: { x, y, r } (bollard or, with kind 'tire', a tire stack) or
  * { kind: 'box', x, y, w, h, a } (rubber barrier). pal: arena palette. hit: 0..1 just-hit glow.
+ * glow: neon bloom on the warning ring, as a shadowBlur in device pixels (0 = none).
  */
-export function drawObstacle(ctx, o, pal, hit = 0) {
+export function drawObstacle(ctx, o, pal, hit = 0, glow = 0) {
   ctx.save();
   ctx.translate(o.x, o.y);
   const squash = hit > 0 ? 1 - hit * 0.08 : 1;
@@ -149,7 +150,9 @@ export function drawObstacle(ctx, o, pal, hit = 0) {
     ctx.beginPath(); ctx.arc(0, 0, o.r * 0.42, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = pal.pillarEdge;
     ctx.lineWidth = 2;
+    if (glow) { ctx.shadowColor = pal.pillarEdge; ctx.shadowBlur = glow; }
     ctx.beginPath(); ctx.arc(0, 0, o.r * 0.42, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
   } else {
     ctx.scale(squash, squash); // rubber bollard: dark base, colored cap, warning band
     ctx.fillStyle = pal.wall;
@@ -162,7 +165,9 @@ export function drawObstacle(ctx, o, pal, hit = 0) {
     ctx.strokeStyle = pal.dash;
     ctx.lineWidth = o.r * 0.14;
     ctx.setLineDash([o.r * 0.32, o.r * 0.26]);
+    if (glow) { ctx.shadowColor = pal.dash; ctx.shadowBlur = glow; }
     ctx.beginPath(); ctx.arc(0, 0, o.r * 0.55, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
     ctx.setLineDash([]);
   }
   if (hit > 0) { // just hit: a bright ring

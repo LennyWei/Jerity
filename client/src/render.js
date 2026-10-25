@@ -11,12 +11,14 @@
 //   r.draw(view, performance.now(), { tilt, countdown, flip, banner, danger });
 
 import { ARENA, CAR_SIZE, OBSTACLES, MAPS, DEFAULT_MAP, SPAWN_POINTS, SCALE, CARS, DEFAULT_CAR, PLAYER_COLORS } from '../../shared/constants.js';
-import { drawBumperCar, drawFlippedCar, drawWreck, drawObstacle } from './art.js';
+import { drawBumperCar, drawFlippedCar, drawObstacle } from './art.js';
 import { CAR_STATE, EVENT, BUFF, HIT_KIND } from '../../shared/protocol.js';
 import { CONFIG } from '../../shared/config.js';
 
 const FX_SCALE = { full: 1, low: 0.4, off: 0 };
 const MAX_PARTICLES = 250;
+const MAX_DEBRIS = 180; // KO fragments kept on the floor for the round
+const MAX_SMOKE = 140;
 
 // Arena palettes as [r, g, b, a]. Without opts.corrupt the renderer keeps the original dark look;
 // with it (the Verity theme) colors blend from a cheerful cream play-mat to a dead black-and-red pit.
@@ -30,9 +32,10 @@ const PAL_CHEER = {
   dash: [246, 185, 59, 0.95], pillarA: [110, 214, 198, 1], pillarB: [31, 158, 143, 1], pillarEdge: [43, 39, 51, 1],
   me: [43, 39, 51, 1], text: [43, 39, 51, 1],
 };
+// Dark and red, but light enough that the floor, walls and pillars still read against the surround.
 const PAL_DEAD = {
-  bg: [10, 7, 7, 1], floor: [20, 14, 13, 1], grid: [200, 40, 40, 0.07], wall: [58, 31, 28, 1],
-  dash: [180, 30, 40, 0.55], pillarA: [59, 42, 40, 1], pillarB: [29, 19, 18, 1], pillarEdge: [140, 29, 36, 1],
+  bg: [24, 15, 14, 1], floor: [48, 29, 27, 1], grid: [220, 60, 60, 0.1], wall: [92, 46, 41, 1],
+  dash: [200, 40, 50, 0.65], pillarA: [96, 64, 60, 1], pillarB: [54, 34, 32, 1], pillarEdge: [170, 40, 48, 1],
   me: [236, 214, 206, 1], text: [230, 211, 200, 1],
 };
 const rgba = ([r, g, b, a]) => `rgba(${r | 0},${g | 0},${b | 0},${a.toFixed(3)})`;
@@ -70,6 +73,7 @@ export function createRenderer(canvas, opts = {}) {
   const ctx = canvas.getContext('2d');
 
   let dpr = 1, cssW = 0, cssH = 0, scale = 1, ox = 0, oy = 0;
+  let ui = 1; // HUD size multiplier: phones get bigger, arm's-length-readable controls
   let me = null;
   let players = new Map(); // id -> { name, color, maxHp }
   const seenMaxHp = new Map();
@@ -86,6 +90,14 @@ export function createRenderer(canvas, opts = {}) {
   const feed = [];        // kill feed for the spectator board: { text, life }
   const toasts = [];      // phone: "You hit Bot 2 · REAR -32", { text, color, life }
   const carFlash = new Map(); // id -> time of last hit, flashes the car white
+  const debris = [];      // KO fragments: { x, y, vx, vy, a, va, w, h, color, heat (1 = white-hot), shard }
+  const scars = [];       // scorch marks where cars were knocked out: { x, y, r, blots, born }
+  const scarred = new Set(); // car ids with a scorch mark
+  const deadSince = new Map(); // car id -> when we first saw it dead (a KO we never saw still gets a mark)
+  const blasts = [];      // KO fireballs: { x, y, life, max }
+  const smoke = [];       // exhaust puffs: { x, y, vx, vy, r0, r1, life, max, dark }
+  const dust = [];        // specks drifting over the floor in two layers (near ones faster: parallax)
+  let lastTimeLeft = Infinity; // the round timer jumping back up = a new round: clear the marks
 
   // -------------------------------------------------------------------------
   // Layout
@@ -102,6 +114,7 @@ export function createRenderer(canvas, opts = {}) {
     scale = Math.min((cssW - pad * 2) / ARENA.W, (cssH - pad * 2) / ARENA.H);
     ox = (cssW - ARENA.W * scale) / 2;
     oy = (cssH - ARENA.H * scale) / 2;
+    ui = showHud ? Math.max(1.2, Math.min(1.6, cssH / 270)) : 1; // 390 px tall (sideways phone): 1.44
   }
   resize();
   const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
@@ -171,7 +184,12 @@ export function createRenderer(canvas, opts = {}) {
           const x = a ? (a.x + v.x) / 2 : v.x, y = a ? (a.y + v.y) / 2 : v.y;
           const dmg = Math.round(e.dmg || 0), rear = e.kind === HIT_KIND.REAR;
           const label = rear ? 'REAR' : 'SIDE';
-          sparks(x, y, (6 + Math.min(24, dmg * 0.6)) * (rear ? 1.6 : 1), ['#fff3b0', '#ffd23f', '#ff9f43'], rear ? 340 : 260);
+          // Sparks spray on through the victim along the blow, and grind off both sides.
+          const blow = a ? Math.atan2(v.y - a.y, v.x - a.x) : Math.random() * Math.PI * 2;
+          const n = (6 + Math.min(24, dmg * 0.6)) * (rear ? 1.6 : 1), hot = ['#fff3b0', '#ffd23f', '#ff9f43'];
+          sparkSpray(x, y, blow, 1.1, n * 0.6, hot, (rear ? 340 : 260) * 1.3);
+          sparkSpray(x, y, blow + Math.PI / 2, 0.7, n * 0.25, hot, rear ? 300 : 230);
+          sparkSpray(x, y, blow - Math.PI / 2, 0.7, n * 0.25, hot, rear ? 300 : 230);
           if (dmg >= 1) floatText(v.x, v.y - 20, `${label} -${dmg}`, rear ? '#ff3b3b' : '#ff6b6b', (14 + Math.min(16, dmg * 0.4)) * (rear ? 1.25 : 1));
           carFlash.set(e.victim, lastNow);
           if (e.victim === me) { hurt(3 + dmg * 0.4, 40 + dmg * 2); toast(`${nameOf(e.attacker)} hit you · ${label} -${dmg}`, '#ff6b6b'); }
@@ -183,7 +201,9 @@ export function createRenderer(canvas, opts = {}) {
           if (!a || !b) break;
           const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
           rings.push({ x, y, r0: 10, r1: 120, life: 0, max: 450, color: '#ffffff' });
-          sparks(x, y, 30, ['#ffffff', '#c8d6ff', '#ffd23f'], 360);
+          const axis = Math.atan2(b.y - a.y, b.x - a.x); // noses meet: sparks squirt out sideways
+          sparkSpray(x, y, axis + Math.PI / 2, 0.9, 18, ['#ffffff', '#c8d6ff', '#ffd23f'], 420);
+          sparkSpray(x, y, axis - Math.PI / 2, 0.9, 18, ['#ffffff', '#c8d6ff', '#ffd23f'], 420);
           // Each car shows what it took (dmgA/dmgB: the faster car hits harder); older servers send dmg only.
           for (const [c, dmg] of [[a, e.dmgA ?? e.dmg], [b, e.dmgB ?? e.dmg]]) {
             if (dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(dmg)}`, '#ff6b6b', 16);
@@ -205,7 +225,7 @@ export function createRenderer(canvas, opts = {}) {
         case EVENT.WALL: {
           const c = pos.get(e.id);
           if (!c) break;
-          sparks(c.x, c.y, 6, ['#9aa3b5', '#c8cfdc'], 120);
+          sparkSpray(c.x, c.y, c.a + Math.PI, 1.8, 8, ['#c8cfdc', '#ffd23f', '#ffffff'], 180); // scraped off the bumper
           if (e.dmg >= 1) {
             floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 13);
             if (e.id === me) hurt(3, 30);
@@ -230,8 +250,7 @@ export function createRenderer(canvas, opts = {}) {
         case EVENT.KILL: {
           const c = pos.get(e.victim), k = pos.get(e.attacker);
           if (c) {
-            sparks(c.x, c.y, 40, ['#ffffff', '#ffd23f', '#ff5a5f', colorOf(e.victim)], 380);
-            rings.push({ x: c.x, y: c.y, r0: 10, r1: 110, life: 0, max: 500, color: '#ffffff' });
+            explode(c, k);
             floatText(c.x, c.y - 30, 'KO', '#ffffff', 26);
           }
           if (k && e.heal >= 1) floatText(k.x, k.y - 44, `+${Math.round(e.heal)} HEAL`, '#5ce1a0', 16);
@@ -312,11 +331,32 @@ export function createRenderer(canvas, opts = {}) {
       p.vx *= k; p.vy *= k;
       p.x += p.vx * dt / 1000; p.y += p.vy * dt / 1000;
     }
-    for (const list of [texts, rings]) {
+    for (const list of [texts, rings, blasts]) {
       for (let i = list.length - 1; i >= 0; i--) {
         list[i].life += dt;
         if (list[i].life >= list[i].max) list.splice(i, 1);
       }
+    }
+    for (const d of debris) { // KO pieces skid to a stop off the walls and cool down
+      if (d.vx || d.vy) {
+        const k = Math.exp(-dt / 280);
+        d.vx *= k; d.vy *= k; d.va *= k;
+        d.x += d.vx * dt / 1000; d.y += d.vy * dt / 1000; d.a += d.va * dt / 1000;
+        if (d.x < 10 || d.x > ARENA.W - 10) { d.vx *= -0.4; d.x = Math.max(10, Math.min(ARENA.W - 10, d.x)); }
+        if (d.y < 10 || d.y > ARENA.H - 10) { d.vy *= -0.4; d.y = Math.max(10, Math.min(ARENA.H - 10, d.y)); }
+        if (Math.abs(d.vx) + Math.abs(d.vy) < 3) d.vx = d.vy = d.va = 0;
+      }
+      if (d.heat > 0) d.heat = Math.max(0, d.heat - dt / 1700);
+    }
+    for (let i = smoke.length - 1; i >= 0; i--) {
+      const s = smoke[i];
+      if ((s.life += dt) >= s.max) { smoke.splice(i, 1); continue; }
+      s.x += s.vx * dt / 1000; s.y += s.vy * dt / 1000;
+    }
+    for (const d of dust) { // drift and wrap around the arena
+      d.x += d.vx * dt / 1000; d.y += d.vy * dt / 1000;
+      if (d.x > ARENA.W + 8) d.x -= ARENA.W + 16;
+      if (d.y > ARENA.H + 8) d.y -= ARENA.H + 16;
     }
     shake *= Math.exp(-dt / 90);
     if (shake < 0.2) shake = 0;
@@ -341,23 +381,34 @@ export function createRenderer(canvas, opts = {}) {
     fpsAvg += (1000 / Math.max(1, dt) - fpsAvg) * 0.05;
     stepEffects(dt);
     pal = themed ? themePalette(opts.corrupt()) : DARK_CSS;
+    if (view && typeof view.timeLeft === 'number') { // timer back up = a new round (spectator): fresh floor
+      if (view.timeLeft > lastTimeLeft + 2) clearRoundMarks();
+      lastTimeLeft = view.timeLeft;
+    }
     if (view && now < freezeUntil && frozenView) view = frozenView; // hit-stop: hold the frame
     else { frozenView = view; if (view) trackMotion(view.cars, now); }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = pal.bg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawSurround();
 
     // World space
     const sx = shake ? (Math.random() * 2 - 1) * shake : 0;
     const sy = shake ? (Math.random() * 2 - 1) * shake : 0;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox + sx), dpr * (oy + sy));
     drawArena();
-    drawSkids();
-
     const cars = view?.cars || [];
+    markMissedKos(cars, now);
+    drawScars();
+    drawSkids();
+    drawDebris();
+    drawSmoke();
+
     const order = [...cars].sort((a, b) => rank(a) - rank(b));
     if (showHud) drawAim(cars);
+    for (const c of order) if (c.s !== CAR_STATE.DEAD) drawCarShadow(c);
     for (const c of order) drawCar(c, now);
     for (const c of order) if (c.s !== CAR_STATE.DEAD) drawHpBar(c);
     drawEffects();
@@ -367,7 +418,9 @@ export function createRenderer(canvas, opts = {}) {
     if (themed) drawCrt();
     if (flash > 0.02) drawFlash();
     if (flashWhite > 0.02) { ctx.fillStyle = `rgba(255,255,255,${(flashWhite * 0.7).toFixed(3)})`; ctx.fillRect(0, 0, cssW, cssH); }
+    if (showHud) drawRoster(cars);
     if (showHud) drawHud(view, cars, hud, now);
+    if (showHud) drawYouMarker(cars, now); // on top of everything, the countdown dimming included
     if (showBoard) drawBoard(cars);
     if (showFps) {
       ctx.fillStyle = '#7f8aa3';
@@ -399,6 +452,21 @@ export function createRenderer(canvas, opts = {}) {
           skids.push({ x1, y1, x2, y2, life: 2500 });
         }
       }
+      // Exhaust puffs out the back, more the faster it goes; under 30% HP, dark heavy smoke.
+      if (fx > 0 && c.s === CAR_STATE.ALIVE && m.speed > 1.5) {
+        const wrecked = c.hp / maxHpOf(c) < 0.3;
+        m.puff = (m.puff || 0) + dt * fx * (wrecked ? 22 : 4 + m.speed * 0.6);
+        while (m.puff >= 1 && smoke.length < MAX_SMOKE) {
+          m.puff -= 1;
+          const bx = c.x - Math.cos(c.a) * (W / 2 + 4), by = c.y - Math.sin(c.a) * (W / 2 + 4);
+          smoke.push({
+            x: bx + (Math.random() - 0.5) * 6, y: by + (Math.random() - 0.5) * 6,
+            vx: -Math.cos(c.a) * 18 + (Math.random() - 0.5) * 16, vy: -Math.sin(c.a) * 18 + (Math.random() - 0.5) * 16,
+            r0: 3, r1: wrecked ? 17 : 10, life: 0, max: wrecked ? 1100 : 650, dark: wrecked,
+          });
+        }
+        if (m.puff > 2) m.puff = 0; // the list is full: no backlog
+      }
       m.x = c.x; m.y = c.y; m.a = c.a; m.t = now;
     }
   }
@@ -418,6 +486,256 @@ export function createRenderer(canvas, opts = {}) {
     if (c.s === CAR_STATE.DEAD) return 0;
     if (c.id === me) return 3;
     return c.s === CAR_STATE.FLIPPED ? 1 : 2;
+  }
+
+  /** Phone: a bobbing "YOU" tag with an arrow over your car (under it near the top wall). */
+  function drawYouMarker(cars, now) {
+    const mine = cars.find((c) => c.id === me);
+    if (!mine || mine.s === CAR_STATE.DEAD) return;
+    const sx = ox + mine.x * scale, sy = oy + mine.y * scale;
+    const bob = Math.sin(now / 200) * 3 * ui;
+    const aw = 8 * ui, ah = 9 * ui, th = 20 * ui;
+    const above = sy - 40 * scale - ah - th - 4 > 0;
+    const dir = above ? 1 : -1; // the arrow points down at the car, or up at it from below
+    const tipY = above ? sy - 40 * scale - 2 + bob : sy + 40 * scale + 2 - bob;
+    const color = colorOf(me);
+    ctx.save();
+    ctx.font = `900 ${12 * ui}px system-ui, sans-serif`;
+    const tw = ctx.measureText('YOU').width + 16 * ui, ly = tipY - dir * (ah + th / 2 - 1);
+    glow(color, 12);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(sx, tipY); ctx.lineTo(sx - aw, tipY - dir * ah); ctx.lineTo(sx + aw, tipY - dir * ah); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    roundRect(sx - tw / 2, ly - th / 2, tw, th, th / 2);
+    ctx.fill(); ctx.stroke();
+    noGlow();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; // white on any paint color
+    ctx.strokeText('YOU', sx, ly + 1);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('YOU', sx, ly + 1);
+    ctx.restore();
+  }
+
+  /** A soft shadow under a car, as if lit from the top left: it lifts the cars off the floor. */
+  function drawCarShadow(c) {
+    const W = CAR_SIZE.W, H = CAR_SIZE.H;
+    ctx.save();
+    ctx.translate(c.x + 3, c.y + 5);
+    ctx.rotate(c.a);
+    if (c.s === CAR_STATE.DISCONNECTED) ctx.globalAlpha = 0.3;
+    ctx.fillStyle = 'rgba(0,0,0,0.14)';
+    roundRect(-W / 2 - 7, -H / 2 - 7, W + 14, H + 14, (H + 14) / 2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    roundRect(-W / 2 - 3, -H / 2 - 3, W + 6, H + 6, (H + 6) / 2); ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * A knockout: the car shatters into glowing pieces of its paint that skid to a stop (mostly
+   * on along the blow), a red fireball and a shockwave go off, the screen kicks, and a scorch
+   * mark stays on the floor for the rest of the round.
+   */
+  function explode(c, killer) {
+    const color = colorOf(c.id);
+    const away = killer ? Math.atan2(c.y - killer.y, c.x - killer.x) : null;
+    const n = fx > 0 ? Math.max(6, Math.round(16 * fx)) : 0;
+    for (let i = 0; i < n && debris.length < MAX_DEBRIS; i++) {
+      const ang = away !== null && Math.random() < 0.6 ? away + (Math.random() - 0.5) * 1.6 : Math.random() * Math.PI * 2;
+      const sp = 140 + Math.random() * 320;
+      debris.push({
+        x: c.x + (Math.random() - 0.5) * 16, y: c.y + (Math.random() - 0.5) * 10,
+        vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+        a: Math.random() * Math.PI * 2, va: (Math.random() - 0.5) * 20,
+        w: 4 + Math.random() * 8, h: 3 + Math.random() * 6,
+        color: Math.random() < 0.25 ? '#262230' : color, // some black rubber, mostly paint
+        heat: 1, shard: Math.random() < 0.55,
+      });
+    }
+    blasts.push({ x: c.x, y: c.y, life: 0, max: 460 });
+    rings.push({ x: c.x, y: c.y, r0: 12, r1: 130, life: 0, max: 520, color: '#ff9f43' });
+    sparks(c.x, c.y, 34, ['#fff3b0', '#ffd23f', '#ff9f43', '#ff5a5f', '#ff2a2a'], 420);
+    addScar(c, color);
+    if (showHud) shake = Math.max(shake, c.id === me ? 18 : 11);
+  }
+
+  function addScar(c, color) {
+    if (scarred.has(c.id)) return;
+    scarred.add(c.id);
+    const blots = Array.from({ length: 6 }, () => ({ dx: (Math.random() - 0.5) * 40, dy: (Math.random() - 0.5) * 30, r: 9 + Math.random() * 14 }));
+    scars.push({ x: c.x, y: c.y, r: 38 + Math.random() * 10, blots, born: lastNow, color });
+  }
+
+  /** A wreck whose KO we never saw (joined late): give it a cold scorch mark and settled pieces. */
+  function markMissedKos(cars, now) {
+    for (const c of cars) {
+      if (c.s !== CAR_STATE.DEAD || scarred.has(c.id)) continue;
+      if (!deadSince.has(c.id)) { deadSince.set(c.id, now); continue; }
+      if (now - deadSince.get(c.id) < 800) continue; // its KILL event is probably on the way
+      addScar(c, colorOf(c.id));
+      scars[scars.length - 1].born = -1e9;
+      for (let i = 0; i < 8 && debris.length < MAX_DEBRIS; i++) {
+        debris.push({ x: c.x + (Math.random() - 0.5) * 60, y: c.y + (Math.random() - 0.5) * 44, vx: 0, vy: 0,
+          a: Math.random() * Math.PI * 2, va: 0, w: 4 + Math.random() * 8, h: 3 + Math.random() * 6,
+          color: Math.random() < 0.25 ? '#262230' : colorOf(c.id), heat: 0, shard: Math.random() < 0.55 });
+      }
+    }
+  }
+
+  function clearRoundMarks() {
+    debris.length = 0; scars.length = 0; blasts.length = 0; smoke.length = 0; skids.length = 0;
+    scarred.clear(); deadSince.clear();
+  }
+
+  /** Scorch marks: charred blots, and embers that cool to a faint glow that stays as a record. */
+  function drawScars() {
+    for (const s of scars) {
+      const g = ctx.createRadialGradient(s.x, s.y, 2, s.x, s.y, s.r);
+      g.addColorStop(0, 'rgba(8,6,6,0.62)');
+      g.addColorStop(0.6, 'rgba(12,8,8,0.34)');
+      g.addColorStop(1, 'rgba(12,8,8,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(10,7,7,0.26)';
+      for (const b of s.blots) { ctx.beginPath(); ctx.arc(s.x + b.dx, s.y + b.dy, b.r, 0, Math.PI * 2); ctx.fill(); }
+      const heat = Math.max(0.14, 1 - (lastNow - s.born) / 5000);
+      const e = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r * 0.75);
+      e.addColorStop(0, `rgba(255,130,40,${(0.5 * heat).toFixed(3)})`);
+      e.addColorStop(0.5, `rgba(240,60,30,${(0.28 * heat).toFixed(3)})`);
+      e.addColorStop(1, 'rgba(200,30,20,0)');
+      ctx.fillStyle = e;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r * 0.75, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  /** KO pieces: paint-colored shards and chunks, white-hot at first, glowing orange as they cool. */
+  function drawDebris() {
+    for (const d of debris) {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.a);
+      if (d.heat > 0.04) { // hot glow around the piece
+        ctx.globalAlpha = d.heat * 0.45;
+        ctx.fillStyle = '#ff7a2a';
+        ctx.beginPath(); ctx.arc(0, 0, Math.max(d.w, d.h) * 0.9, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = d.color;
+      ctx.beginPath();
+      if (d.shard) { ctx.moveTo(-d.w / 2, d.h / 2); ctx.lineTo(d.w / 2, d.h / 2); ctx.lineTo(d.w * 0.1, -d.h / 2); ctx.closePath(); }
+      else ctx.rect(-d.w / 2, -d.h / 2, d.w, d.h);
+      ctx.fill();
+      if (d.heat > 0.35) { ctx.globalAlpha = (d.heat - 0.35) / 0.65 * 0.85; ctx.fillStyle = '#fff3b0'; ctx.fill(); }
+      ctx.restore();
+    }
+  }
+
+  /** Exhaust: puffs swell and fade behind moving cars; a badly hurt car trails dark, heavy smoke. */
+  function drawSmoke() {
+    for (const s of smoke) {
+      const f = s.life / s.max;
+      ctx.globalAlpha = (s.dark ? 0.34 : 0.15) * (1 - f);
+      ctx.fillStyle = s.dark ? '#141012' : pal.text;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r0 + (s.r1 - s.r0) * f, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** Sparks sprayed along a direction (radians) within a spread, drawn as streaks. */
+  function sparkSpray(x, y, ang, spread, n, colors, speed) {
+    const count = Math.round(n * fx);
+    for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+      const a = ang + (Math.random() - 0.5) * spread;
+      const sp = speed * (0.4 + Math.random() * 0.6);
+      particles.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0, max: 220 + Math.random() * 280,
+        color: colors[(Math.random() * colors.length) | 0], size: 1.6 + Math.random() * 2, streak: true,
+      });
+    }
+  }
+
+  /**
+   * The rink around the mat (screen space): diagonal stripes in the margins left and right of
+   * the arena on wide screens, a shadow under the mat so it sits above them, and a big faint
+   * JERITY sign down the side (both sides on the spectator screen; phones keep the right
+   * margin for the standings).
+   */
+  function drawSurround() {
+    const aw = ARENA.W * scale, ah = ARENA.H * scale;
+    ctx.strokeStyle = pal.grid;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    for (let x = -cssH; x < cssW; x += 22) { ctx.moveTo(x, cssH); ctx.lineTo(x + cssH, 0); }
+    ctx.stroke();
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+    ctx.shadowBlur = 24 * dpr; // shadows ignore the transform: device pixels
+    ctx.shadowOffsetY = 6 * dpr;
+    ctx.fillStyle = pal.floor;
+    ctx.fillRect(ox, oy, aw, ah);
+    ctx.restore();
+
+    if (ox < 48) return;
+    const size = Math.min(ox * 0.62, ah / 6);
+    ctx.save();
+    ctx.font = `700 ${size}px Fredoka, 'Trebuchet MS', system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = pal.text;
+    ctx.globalAlpha = 0.1;
+    for (const side of showHud ? [-1] : [-1, 1]) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.translate(side < 0 ? ox / 2 : cssW - ox / 2, cssH / 2);
+      ctx.rotate(side * Math.PI / 2);
+      ctx.fillText('JERITY', 0, 0);
+    }
+    ctx.restore();
+  }
+
+  /** Phone: everyone's HP down the right margin, between Re-center and the move pad. */
+  function drawRoster(cars) {
+    if (ox < 64 || !cars.length) return;
+    const top = 92, bottom = cssH - movePadRadius() * 2 - 34;
+    const rh = Math.min(30 * ui, (bottom - top - 12) / cars.length);
+    if (rh < 14) return; // too short a screen: the HP bars over the cars still show it
+    const twoLine = rh >= 24;
+    const x = cssW - ox + 8, w = ox - 16;
+    const list = [...cars].sort((a, b) => ((a.s === CAR_STATE.DEAD) - (b.s === CAR_STATE.DEAD)) || (b.hp - a.hp));
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    roundRect(x, top, w, list.length * rh + 12, 10); ctx.fill();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    const k = Math.min(ui, 1.3), bh = 5 * k; // text and bars grow a little; the margin is narrow
+    list.forEach((c, i) => {
+      const y = top + 6 + i * rh, dead = c.s === CAR_STATE.DEAD;
+      const f = dead ? 0 : Math.max(0, Math.min(1, c.hp / maxHpOf(c)));
+      ctx.globalAlpha = dead ? 0.4 : c.s === CAR_STATE.DISCONNECTED ? 0.6 : 1;
+      ctx.fillStyle = colorOf(c.id);
+      ctx.beginPath(); ctx.arc(x + 10, y + (twoLine ? 8 * k : rh / 2), 4 * k, 0, Math.PI * 2); ctx.fill();
+      const bx = twoLine ? x + 6 : x + 18, bw = x + w - 6 - bx, by = twoLine ? y + rh - bh - 4 : y + rh / 2 - bh / 2;
+      if (twoLine) {
+        ctx.font = `${c.id === me ? 800 : 600} ${11 * k}px system-ui, sans-serif`;
+        ctx.fillStyle = c.id === me ? '#ffffff' : '#c8cfdc';
+        let name = c.id === me ? 'You' : nameOf(c.id);
+        while (name.length > 1 && ctx.measureText(name).width > w - 26) name = name.slice(0, -1);
+        ctx.fillText(name, x + 18, y + 8 * k);
+      }
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.fillRect(bx, by, bw, bh);
+      const color = f > 0.5 ? '#5ce1a0' : f > 0.25 ? '#ffd23f' : '#ff5a5f';
+      if (!dead) glow(color, 6);
+      ctx.fillStyle = color;
+      ctx.fillRect(bx, by, bw * f, bh);
+      noGlow();
+    });
+    ctx.globalAlpha = 1;
+    ctx.textBaseline = 'alphabetic';
   }
 
   /** Verity theme: CRT scanlines and a red bleed from the edges, both stronger as he turns. */
@@ -464,12 +782,31 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillStyle = floorTex;
     ctx.fillRect(0, 0, W, H);
 
+    // Grid with a slow wave of brightness rolling across it, so the floor never looks frozen.
     ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 50; x < W; x += 50) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
-    for (let y = 50; y < H; y += 50) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
-    ctx.stroke();
+    const t = lastNow / 1000;
+    for (let x = 50; x < W; x += 50) {
+      ctx.globalAlpha = 0.7 + 0.3 * Math.sin(x / 140 - t * 0.6);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 50; y < H; y += 50) {
+      ctx.globalAlpha = 0.7 + 0.3 * Math.sin(y / 110 + t * 0.45);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    // Faint drifting specks, a slow far layer and a faster near one (parallax).
+    if (!dust.length && fx > 0) {
+      for (let i = 0; i < 36; i++) {
+        const near = i % 3 === 0;
+        dust.push({ x: Math.random() * W, y: Math.random() * H, vx: near ? 15 : 6, vy: near ? 6 : 2.4, s: near ? 3 : 1.6, near });
+      }
+    }
+    ctx.fillStyle = pal.text;
+    for (const d of dust) {
+      ctx.globalAlpha = d.near ? 0.09 : 0.05;
+      ctx.fillRect(d.x, d.y, d.s * 2.4, d.s * 0.9);
+    }
+    ctx.globalAlpha = 1;
 
     // painted markings: center circle, dashed ring, spawn pads
     ctx.strokeStyle = pal.grid;
@@ -497,9 +834,22 @@ export function createRenderer(canvas, opts = {}) {
     for (let x = 100; x < W; x += 100) { ctx.fillRect(x - 4, 0, 8, 10); ctx.fillRect(x - 4, H - 10, 8, 10); }
     for (let y = 100; y < H; y += 100) { ctx.fillRect(0, y - 4, 10, 8); ctx.fillRect(W - 10, y - 4, 10, 8); }
 
+    for (const o of obstacles) { // shadows first, so every obstacle stands up off the floor
+      ctx.save();
+      ctx.translate(o.x + 4, o.y + 6);
+      ctx.rotate(o.a || 0);
+      ctx.fillStyle = 'rgba(0,0,0,0.14)';
+      if (o.kind === 'box') { roundRect(-o.w / 2 - 5, -o.h / 2 - 5, o.w + 10, o.h + 10, o.h / 2 + 5); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(0, 0, o.r + 6, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      if (o.kind === 'box') { roundRect(-o.w / 2 - 1, -o.h / 2 - 1, o.w + 2, o.h + 2, o.h / 2 + 1); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(0, 0, o.r + 1, 0, Math.PI * 2); ctx.fill(); }
+      ctx.restore();
+    }
+    const ringGlow = fx >= 1 ? 9 * dpr : 0; // neon bloom on the obstacles' warning rings
     obstacles.forEach((o, i) => {
       const since = lastNow - (obstacleHitAt.get(i) ?? -1e9);
-      drawObstacle(ctx, o, pal, since < 260 ? 1 - since / 260 : 0);
+      drawObstacle(ctx, o, pal, since < 260 ? 1 - since / 260 : 0, ringGlow);
     });
   }
 
@@ -519,8 +869,7 @@ export function createRenderer(canvas, opts = {}) {
       ctx.beginPath(); ctx.moveTo(-W / 2, -4); ctx.lineTo(-W / 2 - len * 0.55, 0); ctx.lineTo(-W / 2, 4); ctx.fill();
     }
 
-    if (c.s === CAR_STATE.DEAD) {
-      drawWreck(ctx, { w: W, h: H });
+    if (c.s === CAR_STATE.DEAD) { // shattered: its pieces and scorch mark are drawn with the floor
       ctx.restore();
       return;
     }
@@ -650,11 +999,14 @@ export function createRenderer(canvas, opts = {}) {
   function drawHpBar(c) {
     const max = maxHpOf(c);
     const f = Math.max(0, Math.min(1, c.hp / max));
-    const w = 40, h = 5, x = c.x - w / 2, y = c.y - 30;
+    const w = 48, h = 7, x = c.x - w / 2, y = c.y - 34;
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
-    ctx.fillStyle = f > 0.5 ? '#5ce1a0' : f > 0.25 ? '#ffd23f' : '#ff5a5f';
+    ctx.fillRect(x - 1.5, y - 1.5, w + 3, h + 3);
+    const color = f > 0.5 ? '#5ce1a0' : f > 0.25 ? '#ffd23f' : '#ff5a5f';
+    glow(color, 7);
+    ctx.fillStyle = color;
     ctx.fillRect(x, y, w * f, h);
+    noGlow();
     if (showNames) {
       const name = players.get(c.id)?.name;
       if (name) {
@@ -667,6 +1019,16 @@ export function createRenderer(canvas, opts = {}) {
   }
 
   function drawEffects() {
+    for (const b of blasts) { // KO fireball: white-hot core, orange body, red rim, fading out
+      const f = b.life / b.max, r = 14 + 72 * easeOut(f), a = 1 - f;
+      const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r);
+      g.addColorStop(0, `rgba(255,250,220,${a.toFixed(3)})`);
+      g.addColorStop(0.35, `rgba(255,170,60,${(0.9 * a).toFixed(3)})`);
+      g.addColorStop(0.75, `rgba(232,40,30,${(0.6 * a).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(200,20,20,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
+    }
     for (const r of rings) {
       const f = r.life / r.max;
       ctx.globalAlpha = 1 - f;
@@ -676,11 +1038,19 @@ export function createRenderer(canvas, opts = {}) {
       ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * easeOut(f), 0, Math.PI * 2);
       ctx.stroke();
     }
+    ctx.lineCap = 'round';
     for (const p of particles) {
       ctx.globalAlpha = 1 - p.life / p.max;
-      ctx.fillStyle = p.color;
-      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+      if (p.streak) { // directional sparks: a short streak along the way it flies
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = p.size;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03); ctx.stroke();
+      } else {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+      }
     }
+    ctx.lineCap = 'butt';
     ctx.textAlign = 'center';
     for (const t of texts) {
       const f = t.life / t.max;
@@ -722,19 +1092,25 @@ export function createRenderer(canvas, opts = {}) {
     if (view && typeof view.timeLeft === 'number') {
       const s = Math.max(0, Math.ceil(view.timeLeft));
       const label = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-      pill(cssW / 2, 20, label, s <= 10 ? '#ff5a5f' : '#e8ecf4', 18);
+      pill(cssW / 2, 20 * ui, label, s <= 10 ? '#ff5a5f' : '#e8ecf4', 18 * ui);
       const left = cars.filter((c) => c.s !== CAR_STATE.DEAD).length;
-      pill(cssW / 2, 48, `${left} left`, '#9aa3b5', 12);
+      pill(cssW / 2, 50 * ui, `${left} left`, '#9aa3b5', 12 * ui);
     }
 
-    if (mine) { // own HP (top left) and score (top right)
+    if (mine) { // own HP (top left) and score (top right), with a neon glow
       const max = maxHpOf(mine), f = Math.max(0, Math.min(1, mine.hp / max));
-      const x = 14, y = 12, w = Math.min(150, cssW * 0.22), h = 14;
+      // The HP bar runs over the top wall; on a wide phone the speed meter and score sit in the
+      // side margins, so nothing covers the corner spawns.
+      const inMargin = ox >= 92;
+      const x = 12, y = 10, w = Math.min(150 * ui, cssW * 0.26), h = 16 * ui;
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      roundRect(x - 4, y - 4, w + 8, h + 8, 8); ctx.fill();
-      ctx.fillStyle = f > 0.5 ? '#5ce1a0' : f > 0.25 ? '#ffd23f' : '#ff5a5f';
+      roundRect(x - 4, y - 4, w + 8, h + 8, 8 * ui); ctx.fill();
+      const hpColor = f > 0.5 ? '#5ce1a0' : f > 0.25 ? '#ffd23f' : '#ff5a5f';
+      glow(hpColor, 12);
+      ctx.fillStyle = hpColor;
       ctx.fillRect(x, y, w * f, h);
-      ctx.font = '800 12px system-ui, sans-serif';
+      noGlow();
+      ctx.font = `800 ${13 * ui}px system-ui, sans-serif`;
       ctx.textAlign = 'left';
       ctx.lineWidth = 3; // readable over the bar and the empty track alike
       ctx.strokeStyle = 'rgba(0,0,0,0.8)';
@@ -742,15 +1118,18 @@ export function createRenderer(canvas, opts = {}) {
       ctx.fillStyle = '#ffffff';
       ctx.fillText(`${Math.max(0, Math.round(mine.hp))} HP`, x + 6, y + h / 2 + 1);
       const sc = `${Math.round(mine.sc || 0)} pts`;
-      ctx.font = '700 15px system-ui, sans-serif';
-      pill(cssW - 14 - (ctx.measureText(sc).width + 18) / 2, 20, sc, '#ffd23f', 15);
-      if (typeof hud.speed === 'number') drawSpeed(x, y + h + 12, w, hud);
+      let ss = 15 * ui;
+      ctx.font = `700 ${ss}px system-ui, sans-serif`;
+      let sw = ctx.measureText(sc).width + ss * 1.2;
+      if (inMargin && sw > ox - 16) { ss *= (ox - 16) / sw; sw = ox - 16; } // shrink to fit the margin
+      pill(cssW - 10 - sw / 2, 20 * ui, sc, '#ffd23f', ss, true);
+      if (typeof hud.speed === 'number') drawSpeed(x, y + h + 12 * ui, inMargin ? ox - 24 : w, hud);
     }
 
     // Who hit whom, newest on top, just above the tilt meter
     toasts.forEach((t, i) => {
       ctx.globalAlpha = t.life < 1700 ? 1 : 1 - (t.life - 1700) / 500;
-      pill(cssW / 2 + Math.min(100, cssW * 0.1), cssH - 50 - i * 26, t.text, t.color, 13); // clear of Verity (bottom left)
+      pill(cssW / 2 + Math.min(100, cssW * 0.1), cssH - 50 * ui - i * 26 * ui, t.text, t.color, 13 * ui); // clear of Verity (bottom left)
     });
     ctx.globalAlpha = 1;
 
@@ -758,13 +1137,13 @@ export function createRenderer(canvas, opts = {}) {
     if (typeof hud.throttle === 'number') drawThrottleMeter(hud.throttle);
     if (hud.move) drawMovePad(hud.move);
 
-    if (hud.banner) pill(cssW / 2, cssH - 64, hud.banner, '#e8ecf4', 15);
+    if (hud.banner && hud.countdown == null) pill(cssW / 2, cssH - 64 * ui, hud.banner, '#e8ecf4', 15 * ui);
 
     if (banner) {
       const f = banner.life / banner.max;
       ctx.globalAlpha = f < 0.8 ? 1 : 1 - (f - 0.8) / 0.2;
       ctx.textAlign = 'center';
-      ctx.font = `900 ${Math.round(30 * (1 + 0.15 * (1 - Math.min(1, f * 6))))}px system-ui, sans-serif`;
+      ctx.font = `900 ${Math.round(30 * ui * (1 + 0.15 * (1 - Math.min(1, f * 6))))}px system-ui, sans-serif`;
       ctx.lineWidth = 5;
       ctx.strokeStyle = 'rgba(0,0,0,0.75)';
       ctx.strokeText(banner.text, cssW / 2, cssH * 0.3);
@@ -777,20 +1156,20 @@ export function createRenderer(canvas, opts = {}) {
       const need = CONFIG.RECOVER_TAPS ?? 8;
       const prog = Math.min(1, hud.flip.taps / need);
       ctx.fillStyle = 'rgba(10,8,4,0.55)';
-      ctx.fillRect(0, cssH / 2 - 62, cssW, 124);
+      ctx.fillRect(0, cssH / 2 - 62 * ui, cssW, 124 * ui);
       const pulse = 1 + Math.sin(now / 90) * 0.06;
       ctx.textAlign = 'center';
-      ctx.font = `900 ${Math.round(34 * pulse)}px system-ui, sans-serif`;
+      ctx.font = `900 ${Math.round(34 * ui * pulse)}px system-ui, sans-serif`;
       ctx.fillStyle = '#ff9f43';
-      ctx.fillText('FLIPPED! TAP!', cssW / 2, cssH / 2 - 22);
-      ctx.font = '600 15px system-ui, sans-serif';
+      ctx.fillText('FLIPPED! TAP!', cssW / 2, cssH / 2 - 22 * ui);
+      ctx.font = `600 ${15 * ui}px system-ui, sans-serif`;
       ctx.fillStyle = '#ffe2c2';
-      ctx.fillText(`${Math.min(hud.flip.taps, need)}/${need}  ·  shaking works too`, cssW / 2, cssH / 2 + 12);
-      const bw = Math.min(320, cssW * 0.6), bx = (cssW - bw) / 2, by = cssH / 2 + 32;
+      ctx.fillText(`${Math.min(hud.flip.taps, need)}/${need}  ·  shaking works too`, cssW / 2, cssH / 2 + 12 * ui);
+      const bw = Math.min(320 * ui, cssW * 0.6), bx = (cssW - bw) / 2, by = cssH / 2 + 32 * ui;
       ctx.fillStyle = 'rgba(255,255,255,0.15)';
-      ctx.fillRect(bx, by, bw, 10);
+      ctx.fillRect(bx, by, bw, 10 * ui);
       ctx.fillStyle = '#5ce1a0';
-      ctx.fillRect(bx, by, bw * prog, 10);
+      ctx.fillRect(bx, by, bw * prog, 10 * ui);
     }
 
     if (hud.countdown != null) {
@@ -798,13 +1177,24 @@ export function createRenderer(canvas, opts = {}) {
       ctx.fillRect(0, 0, cssW, cssH);
       ctx.textAlign = 'center';
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 96px system-ui, sans-serif';
-      ctx.fillText(hud.countdown > 0 ? String(hud.countdown) : 'GO!', cssW / 2, cssH / 2 - 20);
-      if (hud.countdown > 0) { // driving guide while we calibrate
-        ctx.font = '700 16px system-ui, sans-serif';
+      const num = Math.min(96 * ui, cssH * 0.3), ny = cssH / 2 - 8 * ui;
+      ctx.font = `900 ${num}px system-ui, sans-serif`;
+      ctx.fillText(hud.countdown > 0 ? String(hud.countdown) : 'GO!', cssW / 2, ny);
+      if (hud.banner) { // "Round 2 of 5" over the number
+        ctx.font = `800 ${16 * ui}px system-ui, sans-serif`;
         ctx.fillStyle = '#ffd23f';
-        ctx.fillText("Hold your phone the way you'll play and keep it still: that's 'stopped'", cssW / 2, cssH / 2 + 44);
-        ctx.font = '600 14px system-ui, sans-serif';
+        ctx.fillText(hud.banner.toUpperCase(), cssW / 2, ny - num * 0.55 - 6 * ui);
+      }
+      if (hud.countdown > 0) { // driving guide while we calibrate (each line shrinks to fit the screen)
+        const fit = (text, weight, size) => {
+          ctx.font = `${weight} ${size}px system-ui, sans-serif`;
+          const w = ctx.measureText(text).width;
+          if (w > cssW - 24) ctx.font = `${weight} ${size * (cssW - 24) / w}px system-ui, sans-serif`;
+        };
+        const guide = "Hold your phone the way you'll play and keep it still: that's 'stopped'";
+        fit(guide, 700, 16 * ui);
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillText(guide, cssW / 2, cssH / 2 + 44 * ui);
         ctx.fillStyle = '#c8cfdc';
         const tips = [
           CONFIG.DRIVE_MODE === 'omni'
@@ -815,7 +1205,7 @@ export function createRenderer(canvas, opts = {}) {
             ? 'Yanking the other way at full speed flips you. Ease off when the edges glow red'
             : 'Full speed + hard turn = you flip. Ease off when the edges glow red',
         ];
-        tips.forEach((t, i) => ctx.fillText(t, cssW / 2, cssH / 2 + 72 + i * 22));
+        tips.forEach((t, i) => { fit(t, 600, 14 * ui); ctx.fillText(t, cssW / 2, cssH / 2 + 44 * ui + (28 + i * 22) * Math.min(ui, 1.25)); });
       }
     }
     ctx.textBaseline = 'alphabetic';
@@ -824,19 +1214,22 @@ export function createRenderer(canvas, opts = {}) {
   /** Speedometer under the HP bar, with the speed where full steering starts to flip you. */
   function drawSpeed(x, y, w, hud) {
     const max = hud.maxSpeed || 14, f = Math.max(0, Math.min(1, hud.speed / max));
-    const flipAt = Math.min(1, (hud.flipSpeed || max) / max), h = 8;
+    const flipAt = Math.min(1, (hud.flipSpeed || max) / max), h = 8 * ui;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    roundRect(x - 4, y - 4, w + 8, h + 22, 8); ctx.fill();
+    roundRect(x - 4, y - 4, w + 8, h + 22 * ui, 8 * ui); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(x, y, w, h);
     ctx.fillStyle = 'rgba(255,90,95,0.35)'; // flip zone
     ctx.fillRect(x + w * flipAt, y, w * (1 - flipAt), h);
-    ctx.fillStyle = f >= flipAt ? '#ff5a5f' : '#4dd0e1';
+    const color = f >= flipAt ? '#ff5a5f' : '#4dd0e1';
+    glow(color, 10);
+    ctx.fillStyle = color;
     ctx.fillRect(x, y, w * f, h);
-    ctx.font = '700 11px system-ui, sans-serif';
+    noGlow();
+    ctx.font = `700 ${11 * ui}px system-ui, sans-serif`;
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#c8cfdc';
-    ctx.fillText(`${hud.speed.toFixed(0)} m/s${f >= flipAt ? '  · no hard turns' : ''}`, x, y + h + 8);
+    ctx.fillStyle = f >= flipAt ? '#ff8a8e' : '#c8cfdc';
+    ctx.fillText(`${hud.speed.toFixed(0)} m/s${f >= flipAt && w >= 140 ? '  · no hard turns' : ''}`, x, y + h + 8 * ui);
   }
 
   /** Spectator: live leaderboard from `sc` (top right) and kill feed (top left). */
@@ -882,7 +1275,7 @@ export function createRenderer(canvas, opts = {}) {
   }
 
   function drawTiltMeter(tilt) {
-    const w = Math.min(220, cssW * 0.3), h = 8, x = (cssW - w) / 2, y = cssH - 22;
+    const w = Math.min(220 * ui, cssW * 0.36), h = 8 * ui, x = (cssW - w) / 2, y = cssH - 14 - h;
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
     ctx.fillRect(x - 4, y - 4, w + 8, h + 8);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -896,8 +1289,9 @@ export function createRenderer(canvas, opts = {}) {
   }
 
   /** Omni: which way you're tilting, as a dot in a ring (bottom right). Center ring = deadzone. */
+  const movePadRadius = () => Math.min(46 * ui, cssH * 0.15);
   function drawMovePad(m) {
-    const r = Math.min(46, cssH * 0.12), cx = cssW - r - 18, cy = cssH - r - 18;
+    const r = movePadRadius(), cx = cssW - r - 18, cy = cssH - r - 18;
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
     ctx.beginPath(); ctx.arc(cx, cy, r + 8, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.18)';
@@ -907,17 +1301,20 @@ export function createRenderer(canvas, opts = {}) {
     ctx.beginPath(); ctx.arc(cx, cy, dz, 0, Math.PI * 2); ctx.stroke();
     const len = Math.hypot(m.x, m.y), x = cx + m.x * r, y = cy - m.y * r;
     if (len > 0) {
-      ctx.strokeStyle = len >= (CONFIG.FLIP_TILT ?? 0.85) ? '#ff9f43' : '#5ce1a0';
-      ctx.lineWidth = 4;
+      const color = len >= (CONFIG.FLIP_TILT ?? 0.85) ? '#ff9f43' : '#5ce1a0';
+      glow(color, 10);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4 * ui;
       ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke();
+      noGlow();
     }
     ctx.fillStyle = len > 0 ? '#ffffff' : '#5ce1a0';
-    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 7 * ui, 0, Math.PI * 2); ctx.fill();
   }
 
   /** Vertical gauge on the right: up = forward (green), down = reverse (orange). */
   function drawThrottleMeter(t) {
-    const h = Math.min(170, cssH * 0.42), w = 12, x = cssW - 30, y = (cssH - h) / 2 + 20, mid = y + h / 2;
+    const h = Math.min(170 * ui, cssH * 0.45), w = 12 * ui, x = cssW - 18 - w, y = (cssH - h) / 2 + 20, mid = y + h / 2;
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
     roundRect(x - 6, y - 22, w + 12, h + 44, 10); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -927,7 +1324,7 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillRect(x, v >= 0 ? mid - (v * h) / 2 : mid, w, (Math.abs(v) * h) / 2);
     ctx.fillStyle = v === 0 ? '#e8ecf4' : 'rgba(255,255,255,0.35)'; // neutral notch
     ctx.fillRect(x - 3, mid - 1, w + 6, 2);
-    ctx.font = '800 10px system-ui, sans-serif';
+    ctx.font = `800 ${10 * ui}px system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.fillStyle = v > 0 ? '#5ce1a0' : '#9aa3b5';
     ctx.fillText('GO', x + w / 2, y - 10);
@@ -935,17 +1332,27 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillText('REV', x + w / 2, y + h + 11);
   }
 
-  function pill(cx, cy, text, color, size) {
+  function pill(cx, cy, text, color, size, bloom = false) {
     ctx.font = `700 ${size}px system-ui, sans-serif`;
     const w = ctx.measureText(text).width + size * 1.2;
     const h = size * 1.6;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);
     ctx.fill();
+    if (bloom) glow(color, 10);
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.fillText(text, cx, cy + 1);
+    noGlow();
   }
+
+  // Neon bloom: a soft colored glow (shadowBlur, which counts device pixels) on full effects only.
+  function glow(color, blur) {
+    if (fx < 1) return;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur * dpr;
+  }
+  function noGlow() { ctx.shadowBlur = 0; }
 
   // ctx.roundRect is missing before iOS 16, so draw the path by hand.
   function roundRect(x, y, w, h, r) {

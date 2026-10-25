@@ -19,6 +19,7 @@ const TEST_CODE = 'TEST';    // always running, matches loop; join it to get a c
 const TEST_BOTS = 3;
 const MAX_CATCHUP_TICKS = 5; // after a stall (GC, laptop sleep), drop time instead of fast-forwarding
 
+const BOOT_ID = crypto.randomUUID(); // new every server start: phones reset Verity when it changes
 const STEP_MS = 1000 / CONFIG.TICK_HZ;
 const NO_INPUT = { seq: 0, tilt: 0, accel: false, taps: 0 };
 
@@ -307,6 +308,7 @@ export function createRooms(io) {
   function attach(socket) {
     // The player this socket plays as: its own id, or an earlier one it rejoined as.
     socket.data.pid = socket.id;
+    socket.emit(S2C.HELLO, { bootId: BOOT_ID });
     const pid = () => socket.data.pid;
     const myRoom = () => rooms.get(socket.data.code);
 

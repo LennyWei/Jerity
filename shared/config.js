@@ -82,10 +82,11 @@ export const CONFIG = {
   BOOST_SPEED_MULT: 1.15,
 
   // Rounds and scoring (FFA: last car alive wins)
-  COUNTDOWN_S: 3,
+  COUNTDOWN_S: 4,
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
   ROUNDS_PER_MATCH: 5,   // Start plays this many rounds; the final standings rank by performance score
-  RESULTS_MS: 5000,      // round results, then the match's next round
+  RESULTS_MS: 7500,      // between rounds: the winner splash (VICTORY_SPLASH_MS), then the standings, then the next round
+  VICTORY_SPLASH_MS: 2600, // "[trophy] Name Won!" before the standings (client)
   MATCH_RESULTS_MS: 15000, // final standings after the last round, then back to the lobby (TEST room: a new match)
   DEV_MIN_PLAYERS: 1,    // used when the room was created with bots
   DISCONNECT_GRACE_MS: 15000, // a dropped phone keeps its car (a frozen ghost) this long to rejoin

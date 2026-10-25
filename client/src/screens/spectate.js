@@ -4,12 +4,13 @@
 //
 //   mount(root, { net, code, onError }) -> unmount
 
-import { h, joinUrl, renderQr } from '../ui.js';
+import { h, joinUrl, renderQr, colorOf } from '../ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
 import { CONFIG } from '../../../shared/config.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
+import { victorySplash } from './results.js';
 
 export function mount(root, { net, code, onError }) {
   const canvas = h('canvas');
@@ -54,14 +55,36 @@ export function mount(root, { net, code, onError }) {
       ended = r;
       status.replaceChildren(...[
         h('h2', {}, final ? `${r.match[0].name} wins the match!` : r.winnerId ? `${name || 'Someone'} wins${round}!` : 'Draw!'),
-        round && h('p.muted', {}, `Round ${r.round} of ${r.rounds}`),
+        round && h('p.muted', {}, r.match?.length ? `Standings after round ${r.round} of ${r.rounds}` : `Round ${r.round} of ${r.rounds}`),
         final && h('p.muted', {}, `Final standings · performance score after ${r.round} rounds`),
-        ...(final ? r.match : r.leaderboard).slice(0, 5).map((row, i) => h('p.muted', {}, `${i + 1}. ${row.name} · ${row.score}`)),
+        // Between rounds too: the match standings (where everyone really is), not just this round.
+        ...(r.match?.length ? r.match : r.leaderboard).slice(0, 5).map((row, i) => h('p.muted', {}, `${i + 1}. ${row.name} · ${row.score}`)),
       ].filter(Boolean));
       setTimeout(() => { if (ended === r) { ended = null; interp.reset(); showStatus(); } },
         final ? CONFIG.MATCH_RESULTS_MS : CONFIG.RESULTS_MS);
+      showSplash(r, final);
     }),
   ];
+
+  // Every round, the big screen shows the winner's "[trophy] Name Won!" first, like the phones.
+  let splash = null, splashTimer = 0;
+  function showSplash(r, final) {
+    clearTimeout(splashTimer);
+    splash?.remove();
+    const id = final ? r.match[0].id : r.winnerId;
+    const i = lobby?.players.findIndex((p) => p.id === id) ?? -1;
+    const p = i >= 0 ? lobby.players[i] : null;
+    const s = splash = victorySplash({
+      name: final ? r.match[0].name : p?.name || 'Someone', color: colorOf(p, Math.max(0, i)),
+      title: final ? ' Wins the Match!' : ' Won!',
+      sub: final ? `After ${r.round} rounds` : typeof r.round === 'number' ? `Round ${r.round} of ${r.rounds}` : null,
+      final, draw: !id,
+    });
+    s.classList.add('rs-over-arena');
+    el.append(s);
+    splashTimer = setTimeout(() => { s.classList.add('rs-out'); splashTimer = setTimeout(() => s.remove(), 500); },
+      (CONFIG.VICTORY_SPLASH_MS ?? 2600) + (final ? 700 : 0));
+  }
 
   const join = async () => {
     const res = await net.request(C2S.SPECTATE, { code });
@@ -85,6 +108,7 @@ export function mount(root, { net, code, onError }) {
 
   return () => {
     alive = false;
+    clearTimeout(splashTimer);
     cancelAnimationFrame(raf);
     offs.forEach((f) => f());
     offStatus();
