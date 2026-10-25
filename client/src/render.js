@@ -18,6 +18,7 @@ import { CONFIG } from '../../shared/config.js';
 
 const FX_SCALE = { full: 1, low: 0.4, off: 0 };
 const MAX_PARTICLES = 250;
+const FLOAT_TEXT_SCALE = 0.8; // collision popups (-12, SIDE, CONCUSSED...): small enough that a pile-up doesn't hide the cars
 const MAX_DEBRIS = 180; // KO fragments kept on the floor for the round
 const MAX_SMOKE = 140;
 
@@ -304,7 +305,7 @@ export function createRenderer(canvas, opts = {}) {
 
   function floatText(x, y, text, color, size) {
     if (fx === 0 && text[0] !== '-') return; // with effects off, keep only damage numbers
-    texts.push({ x, y, text, color, size, life: 0, max: 900 });
+    texts.push({ x, y, text, color, size: size * FLOAT_TEXT_SCALE, life: 0, max: 900 });
   }
 
   /** A car bumped a wall or obstacle: if it was an obstacle, make that one flash and wobble. */
