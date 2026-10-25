@@ -8,7 +8,8 @@ Add these MP3 files here (use exactly one `.mp3` extension):
   "I'm listening!" and "I can help!" Keep each under four seconds.
 
 The menu clips alternate, with a 25-second pause after playback. Listening clips
-cycle by round, and finish before the full 4.5-second recording window opens.
+cycle by round, and finish before the full six-second recording window opens.
+The cars keep driving throughout.
 Missing clips
 stay silent. Browser autoplay rules require a tap or key press on the first page.
 The bottom-right music-note button mutes Jerity on every screen. The files are

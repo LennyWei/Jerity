@@ -2,6 +2,7 @@
 import { store } from './ui.js';
 import './jerity.css';
 import { CAR_STATE } from '../../shared/protocol.js';
+import { JERITY } from '../../shared/jerity.js';
 import { playVoice, stopVoice, soundMuted, setSoundMuted, unlockAudio,
   microphoneEnabled, enableMicrophone, disableMicrophone, onMicrophoneChange } from './jerity-audio.js';
 
@@ -109,7 +110,7 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
     if (phase === 'listening') phaseLabel.textContent = enabled ? 'Speak now' : 'Enable mic to speak';
     mic.textContent = enabled ? 'Mic on' : 'Enable mic';
     mic.setAttribute('aria-pressed', String(enabled));
-    mic.title = enabled ? 'Disable microphone' : 'Let Jerity listen for 4.5 seconds after each countdown';
+    mic.title = enabled ? 'Disable microphone' : `Let Jerity listen for ${JERITY.LISTEN_MS / 1000} seconds while you drive`;
   }
   function microphoneError(message) {
     if (!alive) return;
@@ -206,7 +207,11 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
     setState, watch, pulse, microphoneError,
     playLine: line => {
       status.textContent = line.text;
-      return playVoice({ ...line, fallback: line.timing !== 'listening_cue', onSpeaking });
+      if (!line.audioBase64 && !line.url) {
+        phaseLabel.textContent = 'Voice unavailable';
+        status.textContent = 'Jerity could not generate his voice. Check the voice test in the lobby.';
+      }
+      return playVoice({ ...line, fallback: false, onSpeaking });
     },
     say: text => playVoice({ text, fallback: true, onSpeaking }),
     react: events => { if (events?.some(e => e.type === 'kill')) pulse(); },

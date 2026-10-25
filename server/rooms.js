@@ -16,6 +16,9 @@ import { botInput } from './bots.js';
 import { VerityPipeline } from '../verity/verity-pipeline.js';
 import { createJerityRound } from './jerity-round.js';
 import { jerityStatus } from './jerity-status.js';
+import { transcribeAudio } from '../verity/verity-stt.js';
+import { speakVerity } from '../verity/verity-voice.js';
+import { validRecording, providerError } from './jerity-diagnostics.js';
 // Server-only details, not tuning.
 const TEST_CODE = 'TEST';    // always running, matches loop; join it to get a car immediately
 const TEST_BOTS = 3;
@@ -25,7 +28,8 @@ const BOOT_ID = crypto.randomUUID(); // new every server start: phones reset Ver
 const STEP_MS = 1000 / CONFIG.TICK_HZ;
 const NO_INPUT = { seq: 0, tilt: 0, accel: false, taps: 0 };
 
-export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), jerityLimits } = {}) {
+export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), jerityLimits,
+  transcribe = transcribeAudio, generateVoice = speakVerity } = {}) {
   const rooms = new Map();
   let botSeq = 1;
   const verityPipelines = new Map();
@@ -178,7 +182,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
       ...(jerityLimits ? { limits: jerityLimits } : {}),
       players: () => [...room.players.values()],
       broadcast: (event, payload) => io.to(room.code).emit(event, payload),
-      isCurrent: () => rooms.get(room.code) === room && room.game === game && room.state === ROOM_STATE.PLAYING,
+      isCurrent: () => rooms.get(room.code) === room && room.game === game && room.state === ROOM_STATE.PLAYING && !room.result,
     });
     for (const p of room.players.values()) if (p.away) room.game.setAway(p.id, true); // still rejoining
     broadcastLobby(room);
@@ -203,6 +207,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
   // arena keeps running for a VICTORY_LAP_MS victory lap (nothing does damage) so everyone sees
   // the winner and the last KO under the win splash, and then endRound shows the scoreboard.
   function decideRound(room) {
+    room.jerity?.cancel();
     const { game } = room;
     const winnerId = game.winnerId();
     const leaderboard = [...room.players.values()].map(p => {
@@ -276,7 +281,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
   }
 
   function tickRoom(room, dt) {
-    if (room.state !== ROOM_STATE.PLAYING || room.jerity?.busy) return;
+    if (room.state !== ROOM_STATE.PLAYING) return;
     room.game.step(takeInputs(room), dt);
     if (!room.result && room.game.over()) decideRound(room);
   }
@@ -329,6 +334,9 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
   // ---------------------------------------------------------------------------
 
   function attach(socket) {
+    const diagnosticBusy = new Set(), diagnosticAt = new Map();
+    const diagnosticAbort = new AbortController();
+    socket.once('disconnect', () => diagnosticAbort.abort());
     // The player this socket plays as: its own id, or an earlier one it rejoined as.
     socket.data.pid = socket.id;
     socket.emit(S2C.HELLO, { bootId: BOOT_ID, jerity: jerityStatus() });
@@ -420,6 +428,37 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
       if (room.players.size < min) return ack({ error: `Need at least ${min} players` });
       ack({ ok: true });
       startMatch(room);
+    });
+    function allowDiagnostic(kind, ack) {
+      const room = myRoom(), player = room?.players.get(pid());
+      if (!player || player.isBot || player.away || room.state !== ROOM_STATE.LOBBY) {
+        ack({ error: 'Join a lobby to test your microphone or Jerity voice.' }); return false;
+      }
+      if (diagnosticBusy.has(kind) || Date.now() - (diagnosticAt.get(kind) || 0) < 10000) {
+        ack({ error: 'Wait a few seconds before testing again.' }); return false;
+      }
+      diagnosticAt.set(kind, Date.now()); diagnosticBusy.add(kind); return true;
+    }
+    on(C2S.JERITY_TEST_MIC, async (msg, ack) => {
+      if (!validRecording(msg)) return ack({ error: 'Unsupported, empty, or oversized recording.' });
+      if (!allowDiagnostic('mic', ack)) return;
+      try {
+        const text = await transcribe(msg.audioBase64, msg.mimeType, { signal: diagnosticAbort.signal });
+        ack({ ok: true, text, bytes: Buffer.byteLength(msg.audioBase64, 'base64') });
+      } catch (error) {
+        console.error('Jerity microphone test:', error.message);
+        ack({ error: providerError('Groq', error) });
+      } finally { diagnosticBusy.delete('mic'); }
+    });
+    on(C2S.JERITY_TEST_VOICE, async (_msg, ack) => {
+      if (!allowDiagnostic('voice', ack)) return;
+      try {
+        const audio = await generateVoice('I am Jerity. Let the chaos begin.', { signal: diagnosticAbort.signal });
+        ack({ ok: true, audioBase64: Buffer.from(audio).toString('base64') });
+      } catch (error) {
+        console.error('Jerity voice test:', error.message);
+        ack({ error: providerError('Fish Audio', error) });
+      } finally { diagnosticBusy.delete('voice'); }
     });
     on(C2S.JERITY_AUDIO, (msg, ack) => {
       const room = myRoom();

@@ -11,6 +11,7 @@ import { MIN_PLAYERS, MAX_PLAYERS, MAPS, DEFAULT_MAP, ARENA } from '../../../sha
 import { drawObstacle } from '../art.js';
 import { calibrate, requestMotionPermission } from './game.js';
 import { mountVerity, LINES } from '../verity-ui.js';
+import { mountJerityDiagnostics } from '../jerity-diagnostics.js';
 
 export function mount(root, { net, playerId, lobby, onLeave }) {
   let state = lobby;
@@ -120,6 +121,7 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
   renderQr(qr, joinUrl(state.code));
   render();
   const verity = mountVerity(helper, { lines: LINES.lobby, microphone: true });
+  const stopDiagnostics = mountJerityDiagnostics(el, net);
 
-  return () => { off(); verity.destroy(); el.remove(); };
+  return () => { off(); stopDiagnostics(); verity.destroy(); el.remove(); };
 }

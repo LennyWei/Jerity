@@ -28,6 +28,10 @@
 .v-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .v-phase { color: #f6b93b; font: 700 11px system-ui, sans-serif; text-shadow: 0 1px 3px #000; }
 .v-phase:empty { display: none; }
+.jerity-tests { width: min(640px, 100%); font: 13px system-ui, sans-serif; }
+.jerity-tests summary { cursor: pointer; padding: 8px 0; }
+.jerity-tests .row { flex-wrap: wrap; margin: 8px 0; }
+.jerity-tests output { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
 .verity[data-phase="listening"] .v-phase { color: #71e9b5; }
 .verity[data-phase="unavailable"] .v-phase { color: #ff8c91; }
 .verity[data-phase="unavailable"] .v-halo { opacity: .8; stroke: #ff8c91; }

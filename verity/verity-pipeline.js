@@ -17,7 +17,7 @@ export class VerityPipeline {
   async _processAndSpeak(gameState, playerInputs, options = {}) {
     const start = performance.now();
     options.signal?.throwIfAborted();
-    const ruling = await this.verity.processPlayerInputs(gameState, playerInputs, options);
+    const ruling = await this.verity.processPlayerInputs(options.getGameState?.() || gameState, playerInputs, options);
     options.signal?.throwIfAborted();
     // Generate both clips concurrently; the room controls playback order.
     const audioBuffers = options.skipTts ? [] : await Promise.all(
@@ -27,6 +27,7 @@ export class VerityPipeline {
           const audio = await speakVerity(line.text, options);
           return { ...line, audio, latencyMs: Math.round(performance.now() - began) };
         } catch (error) {
+          if (!options.signal?.aborted) console.error('Jerity TTS failed:', error.message);
           return { ...line, audio: null, error: error.message };
         }
       })
