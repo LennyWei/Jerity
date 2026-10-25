@@ -32,7 +32,7 @@ export const CONFIG = {
   CAR_RESTITUTION: 0.5,
 
   // Car-to-car damage (faster = more damage; nose into side/rear beats head-on)
-  DMG_K: 0.6,            // damage = DMG_K * impactSpeed^2 * modifiers
+  DMG_K: 0.36,           // damage = DMG_K * impactSpeed^2 * modifiers (full-speed side ram ~71, rear ~92: no one-shots)
   MIN_IMPACT_SPEED: 2,   // ignore bumps slower than this
   HIT_COOLDOWN_MS: 300,  // per pair, so one crunch counts once
   REAR_BONUS: 0.3,       // rear hits deal up to +30% over side hits
@@ -52,9 +52,9 @@ export const CONFIG = {
   KNOCKBACK_MS: 300,          // no throttle or grip for this long after a knockback (steering still works)
 
   // Tip-over (greedy full speed + full steering)
-  FLIP_SPEED_FRAC: 0.85, // at or above this fraction of max speed...
-  FLIP_TILT: 0.85,       // ...with |tilt| at or above this...
-  FLIP_HOLD_MS: 400,     // ...held this long = flip
+  FLIP_SPEED_FRAC: 0.95, // at (nearly) full speed: at or above this fraction of max speed...
+  FLIP_TILT: 0.95,       // ...with (nearly) full steering, |tilt| at or above this...
+  FLIP_HOLD_MS: 2500,    // ...held this long = flip (rare on purpose, for balance)
   FLIPPED_DAMPING: 8,    // flipped car slides to a stop
   RECOVER_TAPS: 8,       // taps to get back up
   RECOVER_INVULN_MS: 1000,
@@ -79,7 +79,7 @@ export const CONFIG = {
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
   RESULTS_MS: 5000,      // results screen, then back to the lobby (TEST room: next round)
   DEV_MIN_PLAYERS: 1,    // used when the room was created with bots
-  DISCONNECT_GRACE_MS: 10000, // a dropped phone keeps its car (a frozen ghost) this long to rejoin
+  DISCONNECT_GRACE_MS: 15000, // a dropped phone keeps its car (a frozen ghost) this long to rejoin
   SCORE_PER_DAMAGE: 1,   // 1 point per HP dealt to other players
   SCORE_KILL: 100,
   SCORE_WIN: 150,

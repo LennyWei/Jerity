@@ -356,9 +356,12 @@ export function createRooms(io) {
   // Always-on TEST room: bots looping rounds
   // ---------------------------------------------------------------------------
 
-  const test = newRoom(TEST_CODE, null, true);
-  for (let i = 1; i <= TEST_BOTS; i++) addPlayer(test, `bot${botSeq++}`, `Bot ${i}`, true);
-  startCountdown(test);
+  // TEST_ROOM=off (production, see render.yaml): its bots would use CPU nobody is watching.
+  if (process.env.TEST_ROOM !== 'off') {
+    const test = newRoom(TEST_CODE, null, true);
+    for (let i = 1; i <= TEST_BOTS; i++) addPlayer(test, `bot${botSeq++}`, `Bot ${i}`, true);
+    startCountdown(test);
+  }
 
   return { attach, codes: () => [...rooms.keys()] };
 }

@@ -46,5 +46,6 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Bumper Brawl server on http://localhost:${PORT}  (room TEST is always running)`);
+  const test = process.env.TEST_ROOM === 'off' ? 'TEST room off' : 'room TEST is always running';
+  console.log(`Bumper Brawl server on http://localhost:${PORT}  (${test})`);
 });

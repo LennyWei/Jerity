@@ -213,7 +213,7 @@ else:
     flipHeld = 0
 if flipHeld >= FLIP_HOLD_MS: flip
 ```
-Full speed plus full steering held for 0.4 s flips the car. This depends on the player's input, so players can learn exactly where the limit is: ease off the throttle or the tilt and you're safe.
+(Nearly) full speed plus full steering held for 2.5 s flips the car (`FLIP_SPEED_FRAC` and `FLIP_TILT` 0.95): rare on purpose, for balance. In omni mode the same hold time applies to yanking off course, which can't be held that long, so omni cars effectively don't flip at this setting. This depends on the player's input, so players can learn exactly where the limit is: ease off the throttle or the tilt and you're safe.
 
 On flip: `state = flipped`, the car slides to a stop (`FLIPPED_DAMPING`), takes extra damage, and the player taps `RECOVER_TAPS` (8) times to get back up. Then a short invulnerability (`RECOVER_INVULN_MS`) and `recover`.
 
@@ -244,18 +244,18 @@ Person 3 owns tuning; nobody hardcodes numbers elsewhere. Key starting values:
 |---|---|---|
 | `MIN_SPEED` | 4 m/s | launch speed when accel is pressed |
 | `ENGINE` | 6 | forward accel per unit mass |
-| `DMG_K` | 0.6 | damage scale (full-speed nose into side ≈ 118 HP: one-shot) |
+| `DMG_K` | 0.36 | damage scale (full-speed nose into side ≈ 71 HP, rear ≈ 92: no one-shots) |
 | `REAR_BONUS` | 0.3 | rear hits up to +30% |
 | `ATTACKER_RECOIL` | 0.1 | attacker's share of side/rear damage |
 | `HEADON_MULT` | 0.35 | head-on damage to each car |
 | `CONCUSSION_MS` | 1500 | head-on stun |
-| `FLIP_SPEED_FRAC` / `FLIP_TILT` / `FLIP_HOLD_MS` | 0.85 / 0.85 / 400 | tip-over trigger |
+| `FLIP_SPEED_FRAC` / `FLIP_TILT` / `FLIP_HOLD_MS` | 0.95 / 0.95 / 2500 | tip-over trigger (rare on purpose) |
 | `RECOVER_TAPS` | 8 | taps to get back up |
 | `WALL_SPEED_KEEP` / `WALL_DMG_K` | 0.35 / 0.08 | wall penalty |
 | `KILL_HEAL_FRAC` / `KILL_BUFF` / `BUFF_MS` | 0.3 / boost / 4000 | kill reward |
 | `ROUND_TIME_S` | 120 | |
 
-**First tuning target:** `DMG_K` is deliberately high, so a perfect full-speed side hit nearly one-shots. If rounds end in 20 seconds, cut `DMG_K` to about 0.3 so a kill takes two or three good hits.
+**Tuning so far:** `DMG_K` went from 0.6 (a full-speed side hit one-shot) to 0.36: side ≈ 71, rear ≈ 92, so a kill takes two good hits and a rear hit is the best one. Bot rounds went from about 20 s to 30-50 s.
 
 All cars use `balanced` stats for the MVP (100 HP, 14 m/s, 3.2 rad/s).
 
@@ -319,7 +319,7 @@ Send `input` at 30 Hz with the accumulated tap count, then reset it.
 - Each player gets the lowest free color index.
 - Host is the creator; if the host leaves, the oldest remaining human becomes host.
 - Joining mid-round is refused (except in bot rooms, for testing).
-- Disconnect during play: for `DISCONNECT_GRACE_MS` (10 s) the car is a ghost (`CAR_STATE.DISCONNECTED`: frozen, out of the physics, nothing hits it, bots ignore it; drawn faint in a bubble with a spinning "Disconnected" label). The phone rejoins with `playerId` + the secret `rejoinKey` from its join ack and gets the same car back, briefly invulnerable, even mid-round, even if the server hadn't noticed the drop yet. No rejoin in time: removed (no kill credit). The server's heartbeat is `DISCONNECT_GRACE_MS / 2`, so a silent phone is noticed within about 10 s.
+- Disconnect during play: for `DISCONNECT_GRACE_MS` (15 s) the car is a ghost (`CAR_STATE.DISCONNECTED`: frozen, out of the physics, nothing hits it, bots ignore it; drawn faint in a bubble with a spinning "Disconnected" label). The phone rejoins with `playerId` + the secret `rejoinKey` from its join ack and gets the same car back, briefly invulnerable, even mid-round, even if the server hadn't noticed the drop yet. No rejoin in time: removed (no kill credit). The server's heartbeat is `DISCONNECT_GRACE_MS / 2`, so a silent phone is noticed within about 15 s.
 
 ### Bots (`/server/bots.js`)
 `bots: 3` on `createRoom` adds 3 server-side players. MVP bots steer toward the nearest car with full accel and moderate tilt (they never flip). When the target faces a bot, the lower id of the two aims `BOT_FLANK_DIST` beside it instead, so bots swerve into side hits rather than head-on double KOs or circling each other; with the target behind it, a bot lets off the throttle to turn tighter. Essential for testing collisions with one or two phones and for tuning alone.
