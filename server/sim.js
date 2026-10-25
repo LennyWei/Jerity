@@ -16,6 +16,8 @@ import { CONFIG } from '../shared/config.js';
 import { createGame } from './game.js';
 import { botInput } from './bots.js';
 
+// These driving checks describe car-style driving (launch, turning radius); omni is checked separately.
+CONFIG.DRIVE_MODE = 'car';
 const dt = 1 / CONFIG.TICK_HZ;
 const spec = CARS[DEFAULT_CAR];
 const ACCEL = { tilt: 0, accel: true, taps: 0 };

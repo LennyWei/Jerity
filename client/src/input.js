@@ -1,14 +1,18 @@
 // client/src/input.js
-// Phone controls: gravity steering, ACCEL/TAP buttons, shake-to-recover.
-// Person 2 owns this file.
+// Phone controls, all from tilt, measured from the grip calibrated in the countdown.
+//   DRIVE_MODE 'omni' (default): tilt the phone the way you want to go on screen, like a marble
+//     on a tray: roll right = right, tip the top edge away = up the screen. Sent as tilt = x,
+//     throttle = y (up), with a round deadzone so diagonals work.
+//   DRIVE_MODE 'car': roll steers, tip the top away to drive, toward you to brake / reverse.
+// Tap anywhere (or shake) to flip back over. Person 2 owns this file.
 //
 // Usage:
 //   await requestMotionPermission();   // from a user tap (iOS needs this + HTTPS)
-//   bindButtons(accelEl, tapEl);
+//   bindTap(el);                       // taps on el count toward flip recovery
 //   startSending(net);                 // emits C2S.INPUT at INPUT_HZ
-//   calibrate();                       // lobby Recalibrate button, countdown
+//   calibrate();                       // lobby Recalibrate button, countdown: sets center for both
 //
-// Desktop fallback for dev: arrows / A,D steer, W or Up = accel, Space = tap, S = shake.
+// Desktop fallback for dev: arrows / A,D steer, Up / W forward, Down reverse, Space = tap, S = shake.
 //
 // Flip recovery is taps (protocol). While flipped, each shake is also sent as a tap, so
 // shaking the phone works too without any server change.
@@ -30,10 +34,13 @@ const st = {
   side: 1,               // which landscape the phone is held in, from gravity (sign of x)
   hold: null,            // 'landscape' | 'portrait' | null (flat / unknown), from gravity
   conv: null,            // +1 Android axis convention, -1 if this browser reports inverted gravity
+  convSure: false,       // conv came from the screen's own rotation, not a guess
+  pitch: 0,              // forward/back tilt in degrees from the calibrated grip, + = forward (smoothed)
+  roll: 0,               // sideways tilt in degrees from the grip, without the car-mode boost (omni)
+  pitchOffset: 30,       // fallback neutral tilt-back before any calibration (a typical grip)
   grav: { x: 0, y: 0, z: G }, // low-passed gravity, for devices without event.acceleration
   linMag: 0,             // |acceleration without gravity|
-  accelPointers: new Set(),
-  keyAccel: false,
+  keyThrottle: 0,
   keySteer: 0,
   taps: 0, shakes: 0,                   // since last sent input
   totals: { taps: 0, shakes: 0 },       // never reset; screens diff these
@@ -119,6 +126,51 @@ export function shapeSteer(angle, offset) {
   return Math.sign(s) * Math.pow(lin, cfg('TILT_EXPO', 1));
 }
 
+/**
+ * How far the top edge is tilted away from you, in degrees (0 = upright facing you, 90 = flat
+ * face up). conv turns the browser's gravity into Android's sign convention: without it,
+ * forward and reverse would swap on browsers that report gravity inverted.
+ */
+export function pitchAngle(gx, gz, side, conv) {
+  return Math.atan2(gz * conv, gx * side) * (180 / Math.PI);
+}
+
+/** Forward/back tilt from the calibrated grip -> throttle in [-1, 1], with a deadzone. */
+export function shapeThrottle(deg) {
+  const dz = cfg('THROTTLE_DEADZONE_DEG', 6);
+  const m = Math.abs(deg);
+  if (m < dz) return 0;
+  const full = deg > 0 ? cfg('THROTTLE_FWD_DEG', 22) : cfg('THROTTLE_BACK_DEG', 16);
+  return Math.sign(deg) * Math.min(1, (m - dz) / (full - dz));
+}
+
+export function getThrottle() {
+  if (st.keyThrottle) return st.keyThrottle;
+  return st.motionOk ? shapeThrottle(st.pitch) : 0;
+}
+
+/**
+ * Omni: the direction you're tilting, { x: right, y: up the screen }, length 0..1.
+ * Roll and tip are combined into one vector with a round deadzone, so a diagonal tilt goes
+ * diagonally at the same speed as a straight one.
+ */
+export function getMove() {
+  if (st.keySteer || st.keyThrottle) {
+    const m = Math.hypot(st.keySteer, st.keyThrottle);
+    return { x: st.keySteer / m, y: st.keyThrottle / m };
+  }
+  if (!st.motionOk) return { x: 0, y: 0 };
+  const full = cfg('OMNI_TILT_DEG', 18);
+  const sign = isIOS ? cfg('TILT_SIGN_IOS', 1) : cfg('TILT_SIGN_ANDROID', 1);
+  const x = (st.roll * sign) / full, y = st.pitch / full;
+  const m = Math.hypot(x, y), dz = cfg('OMNI_DEADZONE', 0.2);
+  if (m < dz) return { x: 0, y: 0 };
+  const k = Math.pow(Math.min(1, (m - dz) / (1 - dz)), cfg('TILT_EXPO', 1)) / m;
+  return { x: x * k, y: y * k };
+}
+
+const omni = () => cfg('DRIVE_MODE', 'car') === 'omni';
+
 export function getTilt() {
   if (st.keySteer) return st.keySteer;
   return st.motionOk ? shapeSteer(st.angle, 0) : 0; // st.angle is already relative to center
@@ -139,14 +191,28 @@ function onMotion(e) {
   if (!g || g.x == null) return;
   st.motionOk = true;
 
-  // Players face the screen, so z is clearly positive in Android's convention unless the
-  // phone is near vertical. Learn the browser's sign from that (only matters for holdState).
-  if (Math.abs(g.z) > 3) st.conv = Math.sign(g.z);
+  // Which sign convention does this browser use? Best: the screen's own rotation. Landscape
+  // at 90 deg has the phone's x axis pointing up, which reads +g in Android's convention.
+  // Otherwise guess: players face the screen, so z is positive unless the phone is upright.
+  const scr = orientationAngle();
+  if ((scr === 90 || scr === 270) && Math.abs(g.x) > 6) {
+    st.conv = Math.sign(g.x) * (scr === 90 ? 1 : -1);
+    st.convSure = true;
+  } else if (!st.convSure && (st.conv == null || st.calSamples) && Math.abs(g.z) > 1.5) {
+    // Guess only from the neutral grip (first reading or while calibrating), never mid-drive:
+    // tipping back past upright flips z, and re-guessing then would swap forward and reverse.
+    st.conv = Math.sign(g.z);
+  }
+  const conv = st.conv ?? (isIOS ? -1 : 1);
+  // A calibration made with the wrong guess: flip its neutral tilt instead of driving backwards.
+  if (st.ref && st.ref.conv !== conv) { st.ref.pitch0 = -st.ref.pitch0; st.ref.conv = conv; }
 
   // Which way is the phone held? Hysteresis so a hard turn doesn't flip it.
-  const ax = Math.abs(g.x), ay = Math.abs(g.y);
-  if (ax > 6 && ax > ay * 1.2) { st.side = Math.sign(g.x); st.hold = 'landscape'; }
-  else if (ay > 7 && ay > ax * 2) st.hold = 'portrait';
+  // Judged by the direction of gravity across the screen, not its size, so a phone held nearly
+  // flat like a controller (little gravity across the screen) still knows which side is up.
+  const ax = Math.abs(g.x), ay = Math.abs(g.y), across = Math.hypot(g.x, g.y);
+  if (across > 2.5 && ax > ay * 1.2) { st.side = Math.sign(g.x); st.hold = 'landscape'; }
+  else if (across > 2.5 && ay > ax * 2) st.hold = 'portrait';
 
   // Relative to the calibrated pose when we have one for this landscape side; otherwise
   // the plain angle minus the calibrated offset (before the first calibration, or after
@@ -155,7 +221,14 @@ function onMotion(e) {
   const plain = wheelAngle(g.x, g.y, gz, st.side);
   const angle = st.ref && st.ref.side === st.side ? poseAngle(g.x, g.y, gz, st.ref) : plain - st.offset;
   st.angle += (angle - st.angle) * 0.5; // light low-pass; the server blends steering too
-  if (st.calSamples) st.calSamples.push({ x: g.x, y: g.y, z: gz, plain });
+  // Omni wants sideways and forward tilt to feel the same, so no flat-grip boost here.
+  const roll = st.ref && st.ref.side === st.side ? angle / st.ref.gain : angle;
+  st.roll += (roll - st.roll) * 0.5;
+
+  const rawPitch = pitchAngle(g.x, gz, st.side, conv);
+  const pitch = rawPitch - (st.ref && st.ref.side === st.side ? st.ref.pitch0 : st.pitchOffset);
+  st.pitch += (pitch - st.pitch) * 0.4;
+  if (st.calSamples) st.calSamples.push({ x: g.x, y: g.y, z: gz, plain, pitch: rawPitch });
 
   // Linear acceleration: use the OS value if present, else subtract low-passed gravity.
   st.grav.x += (g.x - st.grav.x) * 0.1;
@@ -242,8 +315,15 @@ export function calibrate(durationMs = 400) {
         const median = (k) => { const v = s.map((p) => p[k]).sort((a, b) => a - b); return v[v.length >> 1]; };
         const max = cfg('TILT_MAX_DEG', 30) * 1.5;
         st.offset = Math.max(-max, Math.min(max, median('plain')));
-        if (st.hold === 'landscape') st.ref = makeRef({ x: median('x'), y: median('y'), z: median('z') }, st.side);
+        st.pitchOffset = median('pitch');
+        if (st.hold === 'landscape') {
+          st.ref = makeRef({ x: median('x'), y: median('y'), z: median('z') }, st.side);
+          st.ref.pitch0 = st.pitchOffset;              // neutral throttle = this grip
+          st.ref.conv = st.conv ?? (isIOS ? -1 : 1);
+        }
         st.angle = 0;
+        st.roll = 0;
+        st.pitch = 0;
       }
       resolve(st.offset);
     }, durationMs);
@@ -260,49 +340,21 @@ export function recenter() {
 // Buttons (pointer events) and keyboard fallback
 // ---------------------------------------------------------------------------
 
-/**
- * Hold accelEl to accelerate, tap tapEl to recover from a flip. Returns an unbind function.
- * Both elements get class "down" while pressed, for feedback.
- */
-export function bindButtons(accelEl, tapEl) {
+/** Taps on el count toward flip recovery. el gets class "down" while pressed. Returns unbind. */
+export function bindTap(el) {
   listen();
-  const accelDown = (e) => {
-    e.preventDefault();
-    accelEl.setPointerCapture?.(e.pointerId);
-    st.accelPointers.add(e.pointerId);
-    accelEl.classList.add('down');
-  };
-  const accelUp = (e) => {
-    st.accelPointers.delete(e.pointerId);
-    if (!st.accelPointers.size) accelEl.classList.remove('down');
-  };
-  const tapDown = (e) => {
-    e.preventDefault();
-    count('taps');
-    tapEl.classList.add('down');
-  };
-  const tapUp = () => tapEl.classList.remove('down');
-
-  accelEl.addEventListener('pointerdown', accelDown);
-  accelEl.addEventListener('pointerup', accelUp);
-  accelEl.addEventListener('pointercancel', accelUp);
-  tapEl.addEventListener('pointerdown', tapDown);
-  tapEl.addEventListener('pointerup', tapUp);
-  tapEl.addEventListener('pointercancel', tapUp);
+  const down = (e) => { e.preventDefault(); count('taps'); el.classList.add('down'); };
+  const up = () => el.classList.remove('down');
   const noMenu = (e) => e.preventDefault();
-  accelEl.addEventListener('contextmenu', noMenu);
-  tapEl.addEventListener('contextmenu', noMenu);
-
+  el.addEventListener('pointerdown', down);
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('contextmenu', noMenu);
   return () => {
-    accelEl.removeEventListener('pointerdown', accelDown);
-    accelEl.removeEventListener('pointerup', accelUp);
-    accelEl.removeEventListener('pointercancel', accelUp);
-    tapEl.removeEventListener('pointerdown', tapDown);
-    tapEl.removeEventListener('pointerup', tapUp);
-    tapEl.removeEventListener('pointercancel', tapUp);
-    accelEl.removeEventListener('contextmenu', noMenu);
-    tapEl.removeEventListener('contextmenu', noMenu);
-    st.accelPointers.clear();
+    el.removeEventListener('pointerdown', down);
+    el.removeEventListener('pointerup', up);
+    el.removeEventListener('pointercancel', up);
+    el.removeEventListener('contextmenu', noMenu);
   };
 }
 
@@ -315,7 +367,9 @@ function onKey(e) {
   const left = keysDown.has('arrowleft') || keysDown.has('a');
   const right = keysDown.has('arrowright') || keysDown.has('d');
   st.keySteer = (right ? 1 : 0) - (left ? 1 : 0);
-  st.keyAccel = keysDown.has('arrowup') || keysDown.has('w');
+  const fwd = keysDown.has('arrowup') || keysDown.has('w');
+  const back = keysDown.has('arrowdown');
+  st.keyThrottle = (fwd ? 1 : 0) - (back ? 1 : 0);
   if (down && k === ' ') count('taps');
   if (down && k === 's') count('shakes');
 }
@@ -324,16 +378,16 @@ function onKey(e) {
 // Sending
 // ---------------------------------------------------------------------------
 
-export function isAccel() {
-  return st.accelPointers.size > 0 || st.keyAccel;
-}
-
-/** Build the next input message ({ seq, tilt, accel, taps }) and reset the counters. */
+/** Build the next input message ({ seq, tilt, throttle, accel, taps }) and reset the counters. */
 export function takeInput() {
+  const r = (v) => Math.round(v * 1000) / 1000;
+  const mv = omni() ? getMove() : null;
+  const throttle = r(mv ? mv.y : getThrottle());
   const msg = {
     seq: st.seq++,
-    tilt: Math.round(getTilt() * 1000) / 1000,
-    accel: isAccel(),
+    tilt: r(mv ? mv.x : getTilt()), // omni: x of the direction; car: steering
+    throttle,                       // omni: y (up the screen); car: forward/back
+    accel: throttle > 0, // for servers that only know accel
     taps: st.taps + (st.flipped ? st.shakes : 0),
   };
   st.taps = 0; st.shakes = 0;
@@ -369,11 +423,13 @@ export function totals() {
   return { ...st.totals };
 }
 
+export const isOmni = omni;
+
 /** Snapshot for HUD and debug overlays. */
 export function debugState() {
   return {
     motionOk: st.motionOk, angle: st.angle, offset: st.offset, tilt: getTilt(), hold: st.hold,
-    side: st.side, conv: st.conv, accel: isAccel(), linMag: st.linMag,
+    side: st.side, conv: st.conv, convSure: st.convSure, pitch: st.pitch, throttle: getThrottle(), linMag: st.linMag,
     screenAngle: orientationAngle(), isIOS,
   };
 }

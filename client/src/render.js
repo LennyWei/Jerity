@@ -580,6 +580,8 @@ export function createRenderer(canvas, opts = {}) {
     ctx.globalAlpha = 1;
 
     if (typeof hud.tilt === 'number') drawTiltMeter(hud.tilt);
+    if (typeof hud.throttle === 'number') drawThrottleMeter(hud.throttle);
+    if (hud.move) drawMovePad(hud.move);
 
     if (hud.banner) pill(cssW / 2, cssH - 64, hud.banner, '#e8ecf4', 15);
 
@@ -626,13 +628,17 @@ export function createRenderer(canvas, opts = {}) {
       if (hud.countdown > 0) { // driving guide while we calibrate
         ctx.font = '700 16px system-ui, sans-serif';
         ctx.fillStyle = '#ffd23f';
-        ctx.fillText("Hold your phone the way you'll drive and keep it still: that sets straight", cssW / 2, cssH / 2 + 44);
+        ctx.fillText("Hold your phone the way you'll play and keep it still: that's 'stopped'", cssW / 2, cssH / 2 + 44);
         ctx.font = '600 14px system-ui, sans-serif';
         ctx.fillStyle = '#c8cfdc';
         const tips = [
-          'Tilt to steer  ·  hold ACCEL (right) to drive  ·  "Center steering" re-sets straight',
+          CONFIG.DRIVE_MODE === 'omni'
+            ? 'Tilt the phone the way you want to go  ·  level = stop'
+            : 'Roll left/right to steer  ·  tip the top away to drive, toward you to reverse',
           'Ram SIDES and REARS — head-ons stun you both',
-          'Full speed + hard turn = you flip. Ease off when the edges glow red',
+          CONFIG.DRIVE_MODE === 'omni'
+            ? 'Yanking the other way at full speed flips you. Ease off when the edges glow red'
+            : 'Full speed + hard turn = you flip. Ease off when the edges glow red',
         ];
         tips.forEach((t, i) => ctx.fillText(t, cssW / 2, cssH / 2 + 72 + i * 22));
       }
@@ -712,6 +718,46 @@ export function createRenderer(canvas, opts = {}) {
     const t = Math.max(-1, Math.min(1, tilt));
     ctx.fillStyle = '#ffd23f';
     ctx.fillRect(Math.min(x + w / 2, x + w / 2 + (t * w) / 2), y, Math.abs(t * w) / 2, h);
+  }
+
+  /** Omni: which way you're tilting, as a dot in a ring (bottom right). Center ring = deadzone. */
+  function drawMovePad(m) {
+    const r = Math.min(46, cssH * 0.12), cx = cssW - r - 18, cy = cssH - r - 18;
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.beginPath(); ctx.arc(cx, cy, r + 8, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    const dz = (CONFIG.OMNI_DEADZONE ?? 0.2) * r;
+    ctx.beginPath(); ctx.arc(cx, cy, dz, 0, Math.PI * 2); ctx.stroke();
+    const len = Math.hypot(m.x, m.y), x = cx + m.x * r, y = cy - m.y * r;
+    if (len > 0) {
+      ctx.strokeStyle = len >= (CONFIG.FLIP_TILT ?? 0.85) ? '#ff9f43' : '#5ce1a0';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke();
+    }
+    ctx.fillStyle = len > 0 ? '#ffffff' : '#5ce1a0';
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+  }
+
+  /** Vertical gauge on the right: up = forward (green), down = reverse (orange). */
+  function drawThrottleMeter(t) {
+    const h = Math.min(170, cssH * 0.42), w = 12, x = cssW - 30, y = (cssH - h) / 2 + 20, mid = y + h / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    roundRect(x - 6, y - 22, w + 12, h + 44, 10); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(x, y, w, h);
+    const v = Math.max(-1, Math.min(1, t));
+    ctx.fillStyle = v >= 0 ? '#5ce1a0' : '#ff9f43';
+    ctx.fillRect(x, v >= 0 ? mid - (v * h) / 2 : mid, w, (Math.abs(v) * h) / 2);
+    ctx.fillStyle = v === 0 ? '#e8ecf4' : 'rgba(255,255,255,0.35)'; // neutral notch
+    ctx.fillRect(x - 3, mid - 1, w + 6, 2);
+    ctx.font = '800 10px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = v > 0 ? '#5ce1a0' : '#9aa3b5';
+    ctx.fillText('GO', x + w / 2, y - 10);
+    ctx.fillStyle = v < 0 ? '#ff9f43' : '#9aa3b5';
+    ctx.fillText('REV', x + w / 2, y + h + 11);
   }
 
   function pill(cx, cy, text, color, size) {

@@ -9,6 +9,7 @@ import { CAR_STATE } from '../shared/protocol.js';
 import { SCALE } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 
+<<<<<<< Updated upstream
 const IDLE = { tilt: 0, accel: false, taps: 0 };
 
 /** This tick's input for one bot. */
@@ -46,4 +47,16 @@ function wrapAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
+=======
+/** This tick's input for one bot. Bots stay at half the flip limit, so they never tip over. */
+export function botInput(_game, bot) {
+  bot.circleDir ??= Math.random() < 0.5 ? 1 : -1; // each bot keeps one turning direction
+  if (CONFIG.DRIVE_MODE === 'omni') {
+    // Omni: the tilt direction itself goes round, so the bot drives loops.
+    bot.heading = (bot.heading ?? Math.random() * 2 * Math.PI) + 0.05 * bot.circleDir;
+    const m = CONFIG.FLIP_TILT * 0.8;
+    return { tilt: Math.cos(bot.heading) * m, throttle: -Math.sin(bot.heading) * m, taps: 0 };
+  }
+  return { tilt: (CONFIG.FLIP_TILT / 2) * bot.circleDir, accel: true, taps: 0 };
+>>>>>>> Stashed changes
 }

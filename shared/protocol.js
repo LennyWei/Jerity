@@ -15,7 +15,7 @@ export const C2S = {
   SPECTATE:    'spectate',   // { code }                   ack -> { ok } | { error }
   READY:       'ready',      // { ready }
   START:       'start',      // {}                         host only, ack -> { ok } | { error }
-  INPUT:       'input',      // { seq, tilt, accel, taps } 30 Hz while playing
+  INPUT:       'input',      // { seq, tilt, throttle, accel, taps } 30 Hz while playing
   LEAVE:       'leave',      // {}
 };
 
@@ -70,7 +70,9 @@ export const EVENT = {
  * @typedef {Object} Input            phone -> server, 30 Hz
  * @property {number} seq             increments every send
  * @property {number} tilt            -1 (full left) .. 1 (full right), already calibrated
- * @property {boolean} accel          ACCEL button held
+ * @property {number} [throttle]      -1 (full reverse) .. 1 (full forward), from tilting the phone
+ *                                    forward/back. Optional: without it, accel means full forward.
+ * @property {boolean} accel          driving forward (throttle > 0); kept for bots and older clients
  * @property {number} taps            taps since the previous Input (NOT a boolean); used to recover from a flip
  */
 
@@ -134,10 +136,13 @@ export const EVENT = {
 export function sanitizeInput(raw) {
   const tilt = Number(raw?.tilt);
   const taps = Math.floor(Number(raw?.taps));
+  const thr = Number(raw?.throttle);
+  const throttle = Number.isFinite(thr) ? Math.max(-1, Math.min(1, thr)) : raw?.accel ? 1 : 0;
   return {
     seq: Number(raw?.seq) || 0,
     tilt: Number.isFinite(tilt) ? Math.max(-1, Math.min(1, tilt)) : 0,
-    accel: !!raw?.accel,
+    throttle,
+    accel: throttle > 0,
     taps: Number.isFinite(taps) ? Math.max(0, Math.min(20, taps)) : 0,
   };
 }

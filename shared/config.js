@@ -10,11 +10,24 @@ export const CONFIG = {
   INPUT_HZ: 30,
   INTERP_DELAY_MS: 150,  // 3 snapshots at 20 Hz; 100 jittered (build plan fix, Person 2)
 
+  // Driving mode. 'omni': tilt the phone the way you want to go on screen (like a marble on a
+  // tray); the car's nose turns to face where it is going. 'car': roll steers, tip drives.
+  DRIVE_MODE: 'omni',
+  OMNI_ACCEL: 9,          // m/s^2: how fast the car's velocity swings to where you tilt (weight)
+  OMNI_FACE_GAIN: 8,      // how quickly the nose turns to face the direction of travel
+  OMNI_FLIP_ANGLE_DEG: 60, // omni tip-over: yanking at least this far off your direction of travel...
+  OMNI_FLIP_SPEED_FRAC: 0.7, // ...while above this fraction of top speed (swinging bleeds speed, so lower than FLIP_SPEED_FRAC)
+  OMNI_TILT_DEG: 18,      // phone tilt (from the calibrated grip) for full speed in that direction
+  OMNI_DEADZONE: 0.2,     // fraction of OMNI_TILT_DEG (3.6 deg) that counts as no tilt, in any direction
+
   // Driving
   MIN_SPEED: 4,          // instant launch speed when ACCEL is pressed
   ENGINE: 6,             // forward accel per unit mass while ACCEL held
   GRIP: 0.9,             // fraction of sideways velocity removed per tick
-  COAST_DAMPING: 1.2,    // linear damping when ACCEL released (also while stunned)
+  COAST_DAMPING: 1.2,    // linear damping when the throttle is centered (also while stunned)
+  BRAKE: 14,             // m/s^2 when tilting back while still rolling forward
+  REVERSE_ENGINE: 5,     // m/s^2 backwards once stopped
+  REVERSE_MAX_SPEED: 5,  // reverse is for backing out of trouble, not for racing
   ANGULAR_DAMPING: 3,    // spin decay while nobody steers the car (stunned or flipped)
   CAR_RESTITUTION: 0.5,
 
@@ -84,6 +97,12 @@ export const CONFIG = {
   TILT_EXPO: 1.5,        // response curve: 10 deg -> about 12-25% turn depending on grip, 30 deg full lock
   TILT_SIGN_IOS: 1,      // set to -1 if tilting right steers left on iPhone (client/public/tilt-test.html)
   TILT_SIGN_ANDROID: 1,  // same check on Android
+
+  // Throttle from tilting the phone forward (top edge away from you) or back, measured from
+  // the calibrated grip like steering. Bigger deadzone than steering: turning nudges it a bit.
+  THROTTLE_DEADZONE_DEG: 6,
+  THROTTLE_FWD_DEG: 22,  // forward tilt (from the calibrated grip) for full throttle
+  THROTTLE_BACK_DEG: 16, // back tilt for full reverse
 
   // Shake to recover: while flipped, the phone sends each shake as a tap (client only).
   // From a motion simulation: a light 4 Hz shake recovers in ~1 s; steering never triggers it.

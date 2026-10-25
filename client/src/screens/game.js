@@ -24,18 +24,7 @@ const CSS = `
 .bb-game { position: fixed; inset: 0; background: #0b0d12; overflow: hidden;
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .bb-game canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.bb-pad { position: absolute; top: 0; bottom: 0; width: 50%; display: flex; align-items: flex-end;
-  padding: 0 0 max(14px, env(safe-area-inset-bottom)); box-sizing: border-box; touch-action: none; }
-.bb-pad.tap { left: 0; justify-content: flex-start; padding-left: max(14px, env(safe-area-inset-left)); }
-.bb-pad.accel { right: 0; justify-content: flex-end; padding-right: max(14px, env(safe-area-inset-right)); }
-.bb-pad .lbl { pointer-events: none; min-width: 96px; padding: 12px 18px; border-radius: 18px;
-  font: 800 18px/1.1 system-ui, sans-serif; color: #fff; text-align: center;
-  background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.18);
-  transition: transform 60ms, background 60ms; }
-.bb-pad .lbl small { display: block; font-weight: 600; font-size: 11px; opacity: 0.7; margin-top: 3px; }
-.bb-pad.accel .lbl { min-width: 128px; padding: 22px 18px; }
-.bb-pad.accel.down .lbl { background: rgba(92,225,160,0.35); border-color: #5ce1a0; transform: scale(0.95); }
-.bb-pad.tap.down .lbl { background: rgba(77,208,225,0.35); border-color: #4dd0e1; transform: scale(0.95); }
+.bb-pad { position: absolute; inset: 0; touch-action: none; } /* tap anywhere: flip back */
 .bb-game.out .bb-pad, .bb-game.out .bb-center { display: none; }
 .bb-center { position: absolute; top: 52px; right: max(14px, env(safe-area-inset-right)); z-index: 3;
   font: 700 13px system-ui, sans-serif; color: #e8ecf4; padding: 7px 14px; border-radius: 999px;
@@ -76,17 +65,15 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   el.className = 'bb-game';
   el.innerHTML = `
     <canvas></canvas>
-    <div class="bb-pad tap"><div class="lbl">TAP<small>flip back</small></div></div>
-    <div class="bb-pad accel"><div class="lbl">ACCEL<small>hold</small></div></div>
-    <button class="bb-center" type="button">Center steering</button>
+    <div class="bb-pad"></div>
+    <button class="bb-center" type="button">Re-center</button>
     <div class="bb-overlay motion"><div>Tilt steering needs motion access</div><button>Enable steering</button></div>
     <div class="bb-overlay rotate"><div class="phone"></div><div>Hold your phone sideways</div></div>
   `;
   root.appendChild(el);
 
   const canvas = el.querySelector('canvas');
-  const tapEl = el.querySelector('.bb-pad.tap');
-  const accelEl = el.querySelector('.bb-pad.accel');
+  const tapEl = el.querySelector('.bb-pad');
   const motionEl = el.querySelector('.bb-overlay.motion');
   const rotateEl = el.querySelector('.bb-overlay.rotate');
 
@@ -115,9 +102,9 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     input.calibrate();
   });
 
-  const unbind = input.bindButtons(accelEl, tapEl);
+  const unbind = input.bindTap(tapEl);
 
-  // Re-center any time: whatever angle you hold now becomes "straight".
+  // Re-center any time: however you hold the phone now becomes straight and stopped.
   const centerEl = el.querySelector('.bb-center');
   let centerTimer = 0;
   centerEl.addEventListener('click', async () => {
@@ -125,7 +112,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     centerEl.textContent = 'Centered ✓';
     centerEl.classList.add('done');
     clearTimeout(centerTimer);
-    centerTimer = setTimeout(() => { centerEl.textContent = 'Center steering'; centerEl.classList.remove('done'); }, 900);
+    centerTimer = setTimeout(() => { centerEl.textContent = 'Re-center'; centerEl.classList.remove('done'); }, 900);
   });
   if (playerId) { input.startSending(net); sending = true; }
   else el.classList.add('out');
@@ -149,6 +136,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     if (seconds <= 0) goTimer = setTimeout(() => { count = null; }, 600);
   }
   if (countdown != null) onCountdown({ seconds: countdown });
+  else if (playerId) input.calibrate(800); // joined mid-round: no countdown to calibrate in
 
   const offs = [
     listen(net, S2C.COUNTDOWN, onCountdown),
@@ -189,25 +177,40 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   // Frame loop
   // ---------------------------------------------------------------------------
 
+  const myVel = { x: 0, y: 0 }; // m/s, screen axes (y down)
+
   function trackSpeed(snap) {
     const m = playerId && snap.cars.find((c) => c.id === playerId);
     const t = typeof snap.t === 'number' ? snap.t : lastSnapAt;
     if (m && lastMine && t > lastMine.t) {
-      const v = Math.hypot(m.x - lastMine.x, m.y - lastMine.y) / SCALE / ((t - lastMine.t) / 1000);
-      mySpeed += (v - mySpeed) * 0.5;
+      const s = (t - lastMine.t) / 1000;
+      const vx = (m.x - lastMine.x) / SCALE / s, vy = (m.y - lastMine.y) / SCALE / s;
+      mySpeed += (Math.hypot(vx, vy) - mySpeed) * 0.5;
+      myVel.x += (vx - myVel.x) * 0.5;
+      myVel.y += (vy - myVel.y) * 0.5;
     }
     lastMine = m ? { x: m.x, y: m.y, t, buff: m.buff } : null;
   }
 
   /** 0..1: how close we are to tipping over (near max speed while steering near FLIP_TILT). */
-  // Same threshold the server uses: base top speed (boost doesn't move it).
-  const FLIP_SPEED = CARS[DEFAULT_CAR].maxSpeed * (CONFIG.FLIP_SPEED_FRAC ?? 0.85);
+  // Same thresholds the server uses: base top speed (boost doesn't move it).
+  const OMNI = input.isOmni();
+  const FLIP_SPEED = CARS[DEFAULT_CAR].maxSpeed
+    * (OMNI ? CONFIG.OMNI_FLIP_SPEED_FRAC ?? 0.7 : CONFIG.FLIP_SPEED_FRAC ?? 0.85);
   const topSpeed = () => CARS[DEFAULT_CAR].maxSpeed * (lastMine?.buff === BUFF.BOOST ? CONFIG.BOOST_SPEED_MULT ?? 1 : 1);
 
-  function flipDanger(tilt) {
+  function flipDanger(tilt, move) {
     if (myState !== CAR_STATE.ALIVE || !lastMine) return 0;
     const flipSpeed = FLIP_SPEED;
-    const near = Math.min(mySpeed / flipSpeed, Math.abs(tilt) / (CONFIG.FLIP_TILT ?? 0.85));
+    let steer = Math.abs(tilt);
+    if (OMNI) { // omni: how hard you're yanking away from where you're already going
+      const want = Math.hypot(move.x, move.y), wx = move.x, wy = -move.y;
+      const off = want > 0 && mySpeed > 0.5
+        ? Math.acos(Math.max(-1, Math.min(1, (wx * myVel.x + wy * myVel.y) / (want * Math.hypot(myVel.x, myVel.y))))) * (180 / Math.PI)
+        : 0;
+      steer = Math.min(want, off / (CONFIG.OMNI_FLIP_ANGLE_DEG ?? 60));
+    }
+    const near = Math.min(mySpeed / flipSpeed, steer / (CONFIG.FLIP_TILT ?? 0.85));
     return near < 0.85 ? 0 : Math.min(1, 0.3 + (near - 0.85) / 0.15 * 0.7);
   }
 
@@ -286,9 +289,12 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     const flip = updateOwnState();
     const showTilt = !!playerId && myState !== CAR_STATE.DEAD;
     const tilt = input.getTilt();
+    const move = input.getMove();
     renderer.draw(view, now, {
-      tilt: showTilt ? tilt : undefined,
-      danger: showTilt ? flipDanger(tilt) : 0,
+      tilt: showTilt && !OMNI ? tilt : undefined,
+      throttle: showTilt && !OMNI ? input.getThrottle() : undefined,
+      move: showTilt && OMNI ? move : undefined,
+      danger: showTilt ? flipDanger(tilt, move) : 0,
       speed: showTilt && myState !== null ? mySpeed : undefined,
       maxSpeed: topSpeed(),
       flipSpeed: FLIP_SPEED,

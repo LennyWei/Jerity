@@ -215,6 +215,8 @@ export function createGame(players) {
       return;
     }
 
+    if (CONFIG.DRIVE_MODE === 'omni') return driveOmni(car, input, dt, spec, boosted);
+
     const mass = b.getMass();
     const fwd = b.getWorldVector(Vec2(1, 0));
     const right = b.getWorldVector(Vec2(0, 1));
@@ -226,6 +228,7 @@ export function createGame(players) {
       b.applyLinearImpulse(Vec2.mul(right, -lat * mass * CONFIG.GRIP), b.getWorldCenter());
     }
 
+<<<<<<< Updated upstream
     // Throttle: instant launch to MIN_SPEED, plus engine force up to max speed. Both in the
     // same tick: a turning car's forward speed dips just under MIN_SPEED every tick, and with
     // launch-or-engine it would be relaunched forever and never speed up.
@@ -238,19 +241,93 @@ export function createGame(players) {
       }
       if (Math.max(fwdSpeed, CONFIG.MIN_SPEED) < maxSpeed) {
         b.applyForceToCenter(Vec2.mul(fwd, CONFIG.ENGINE * mass * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1)));
+=======
+    // Throttle, -1..1 (phones tilt forward/back; bots and old clients send accel = full forward).
+    // Forward: partial throttle cruises at that fraction of top speed; quick launch to MIN_SPEED.
+    // Back: brake while still rolling forward, then reverse up to REVERSE_MAX_SPEED.
+    const throttle = Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0;
+    const fwdSpeed = Vec2.dot(fwd, b.getLinearVelocity());
+    const push = (accel) => b.applyForceToCenter(Vec2.mul(fwd, accel * mass));
+    if (throttle > 0) {
+      const target = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1) * throttle;
+      const launch = Math.min(CONFIG.MIN_SPEED, target);
+      b.setLinearDamping(fwdSpeed > target ? CONFIG.COAST_DAMPING : 0); // eased off: roll down to the new cruise speed
+      if (fwdSpeed < launch) {
+        b.applyLinearImpulse(Vec2.mul(fwd, (launch - fwdSpeed) * mass), b.getWorldCenter());
+      } else if (fwdSpeed < target) {
+        push(CONFIG.ENGINE * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1));
+>>>>>>> Stashed changes
       }
+    } else if (throttle < 0) {
+      b.setLinearDamping(0);
+      if (fwdSpeed > 0.5) push(-CONFIG.BRAKE * -throttle);                                // braking
+      else if (fwdSpeed > -CONFIG.REVERSE_MAX_SPEED * -throttle) push(-CONFIG.REVERSE_ENGINE); // reversing
     } else {
       b.setLinearDamping(CONFIG.COAST_DAMPING);
     }
 
-    // Steering: no spinning in place, full turn rate from MIN_SPEED up. Planck would damp the
-    // turn rate during the step, so damping is off while the player steers.
+    // Steering: no spinning in place, full turn rate from MIN_SPEED up. Like a real car, the
+    // nose swings the other way in reverse. Planck would damp the turn rate during the step,
+    // so damping is off while the player steers.
     const speed = b.getLinearVelocity().length();
+    const roll = Vec2.dot(fwd, b.getLinearVelocity());
     b.setAngularDamping(0);
-    b.setAngularVelocity(input.tilt * spec.turnRate * Math.min(1, speed / CONFIG.MIN_SPEED));
+    b.setAngularVelocity(input.tilt * spec.turnRate * Math.max(-1, Math.min(1, roll / CONFIG.MIN_SPEED)));
 
     // Tip-over: full speed + full steering held too long (design.md 5.3)
     car.flipHeldMs = flipTick(car.flipHeldMs, speed, spec.maxSpeed, input.tilt, dt * 1000);
+    if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
+      car.s = CAR_STATE.FLIPPED;
+      car.taps = 0;
+      car.flipHeldMs = 0;
+      events.push({ type: EVENT.FLIP, id: car.id });
+    }
+  }
+
+  /**
+   * Omni driving: the phone's tilt is a direction on screen (tilt = right, throttle = forward,
+   * which is up the screen) and the car's velocity swings toward it at OMNI_ACCEL, so it still
+   * feels heavy. The nose turns to face the direction of travel, so side and rear hits keep
+   * working. Tip-over: at speed, yanking hard far off your current direction of travel.
+   */
+  function driveOmni(car, input, dt, spec, boosted) {
+    const b = car.body;
+    const mass = b.getMass();
+    const v = b.getLinearVelocity();
+    const wx = Number(input.tilt) || 0;
+    const wy = -(Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0); // forward = -y
+    const want = Math.min(1, Math.hypot(wx, wy));
+    const maxSpeed = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1);
+
+    if (want > 0) {
+      b.setLinearDamping(0);
+      const k = (maxSpeed * want) / Math.hypot(wx, wy);
+      const dvx = wx * k - v.x, dvy = wy * k - v.y, dv = Math.hypot(dvx, dvy);
+      const cap = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
+      const s = dv > cap ? cap / dv : 1;
+      b.applyLinearImpulse(Vec2(dvx * s * mass, dvy * s * mass), b.getWorldCenter());
+    } else {
+      b.setLinearDamping(CONFIG.COAST_DAMPING); // no tilt: roll to a stop
+    }
+
+    // Nose follows the direction of travel (only once actually moving, so bumps don't spin it).
+    const vel = b.getLinearVelocity(), speed = vel.length();
+    b.setAngularDamping(0);
+    if (speed > 0.8) {
+      const diff = Math.atan2(Math.sin(Math.atan2(vel.y, vel.x) - b.getAngle()), Math.cos(Math.atan2(vel.y, vel.x) - b.getAngle()));
+      const maxTurn = spec.turnRate * 2;
+      b.setAngularVelocity(Math.max(-maxTurn, Math.min(maxTurn, diff * CONFIG.OMNI_FACE_GAIN)));
+    } else {
+      b.setAngularVelocity(0);
+    }
+
+    // Tip-over: near top speed, demanding a direction far off where you are going.
+    const off = want > 0 && speed > 0
+      ? Math.acos(Math.max(-1, Math.min(1, (wx * vel.x + wy * vel.y) / (Math.hypot(wx, wy) * speed)))) * (180 / Math.PI)
+      : 0;
+    const greedy = speed >= CONFIG.OMNI_FLIP_SPEED_FRAC * spec.maxSpeed && want >= CONFIG.FLIP_TILT
+      && off >= CONFIG.OMNI_FLIP_ANGLE_DEG;
+    car.flipHeldMs = greedy ? car.flipHeldMs + dt * 1000 : 0;
     if (car.flipHeldMs >= CONFIG.FLIP_HOLD_MS) {
       car.s = CAR_STATE.FLIPPED;
       car.taps = 0;

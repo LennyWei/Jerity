@@ -45,6 +45,12 @@
     <div class="bar"><i id="steerBar"></i></div>
     <div style="color:var(--dim)">Tilt right → bar moves right?</div>
   </div>
+  <div class="card"><b>Throttle (−1 reverse … 1 forward)</b>
+    <div class="big" id="thr">0.000</div>
+    <div class="bar"><i id="thrBar"></i></div>
+    <div>tilt from grip: <span id="pitch">–</span>° · conv <span id="conv">–</span></div>
+    <div style="color:var(--dim)">Tip the top away → bar right (forward)?</div>
+  </div>
   <div class="card"><b>Orientation</b>
     <div>screen.orientation.angle: <span id="soa">–</span></div>
     <div>window.orientation: <span id="wo">–</span></div>
@@ -82,6 +88,12 @@ $('plat').textContent = isIOS ? 'iOS' : (/Android/.test(navigator.userAgent) ? '
 
 let sign = 1, offset = 0, raw = 0, peak = 0, shakes = 0, lastShake = 0;
 let side = 1, hold = '–', shakeArmed = true;
+let conv = null, convSure = false, pitch0 = 30; // same throttle math as input.js
+const pitchAngle = (g, side, conv) => Math.atan2(g.z * conv, g.x * side) * (180 / Math.PI);
+function shapeThrottle(d) {
+  const dz = 6, m = Math.abs(d);
+  return m < dz ? 0 : Math.sign(d) * Math.min(1, (m - dz) / ((d > 0 ? 22 : 16) - dz));
+}
 const grav = { x: 0, y: 0, z: 9.81 };
 const num = (id) => parseFloat($(id).value);
 const f = (v) => (v == null ? '–' : v.toFixed(2));
@@ -135,6 +147,15 @@ function onMotion(e) {
   $('gx').textContent = f(g.x); $('gy').textContent = f(g.y); $('gz').textContent = f(g.z);
   $('raw').textContent = raw.toFixed(1);
 
+  if ((a === 90 || a === 270) && Math.abs(g.x) > 6) { conv = Math.sign(g.x) * (a === 90 ? 1 : -1); convSure = true; }
+  else if (!convSure && Math.abs(g.z || 0) > 3) conv = Math.sign(g.z);
+  const c = conv ?? (isIOS ? -1 : 1);
+  const p = pitchAngle(lastG, side, c) - pitch0, t = shapeThrottle(p);
+  $('pitch').textContent = p.toFixed(1); $('conv').textContent = `${c}${convSure ? ' (sure)' : ' (guess)'}`;
+  $('thr').textContent = t.toFixed(3);
+  $('thrBar').style.left = (50 + Math.min(0, t) * 50) + '%';
+  $('thrBar').style.width = Math.abs(t) * 50 + '%';
+
   const s = shape(raw);
   $('steer').textContent = s.toFixed(3);
   const bar = $('steerBar');
@@ -171,6 +192,7 @@ $('start').onclick = async () => {
 };
 $('cal').onclick = () => {
   if (lastG && hold === 'landscape') { ref = makeRef(lastG, side); offset = 0; } else offset = raw;
+  if (lastG) pitch0 = pitchAngle(lastG, side, conv ?? (isIOS ? -1 : 1));
   $('off').textContent = ref ? 'pose' : offset.toFixed(1);
 };
 $('sign').onclick = () => { sign = -sign; $('sign').textContent = 'Sign: ' + (sign > 0 ? '+1' : '−1'); };
