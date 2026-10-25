@@ -20,9 +20,6 @@ const VISITS_KEY = 'jerity-visits';
 const EXTRA_KEY = 'jerity-corruption';
 const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
 
-export function corruption() {
-  return Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / (MINUTES_TO_FULL * 60));
-}
 export function bumpCorruption(amount) {
   extra = Math.min(1, extra + amount);
   store.set('jerity-corruption', extra.toFixed(3));
