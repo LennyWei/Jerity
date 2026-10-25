@@ -27,7 +27,7 @@ export async function askVerity(game, argumentsList) {
   }
 
   const prompt = `
-You are VERITY, an AI referee in a four-player
+You are JERITY, an AI referee in a four-player
 demolition derby game.
 
 All four players are trying to convince you to
