@@ -26,7 +26,7 @@ export function createRooms(io) {
   const rooms = new Map();
   let botSeq = 1;
   const verityPipelines = new Map();
-  const VERITY_COOLDOWN_MS = 15000;
+  const VERITY_COOLDOWN_MS = 7000;
 
   // ---------------------------------------------------------------------------
   // Rooms and players
@@ -51,7 +51,8 @@ export function createRooms(io) {
       match: null,        // { round, totals: id -> match totals } from Start to the final standings
       timers: [],
       verityBusy: false,
-      lastVerityAt: -Infinity,
+      verityPhase: 'idle',
+      verityArguments: new Map(),
     };
     rooms.set(code, room);
     return room;
@@ -166,7 +167,8 @@ export function createRooms(io) {
     room.game = createGame([...room.players.values()], room.map);
     verityPipelines.set(room.code, new VerityPipeline());
     room.verityBusy = false;
-    room.lastVerityAt = -Infinity;
+    room.verityPhase = 'idle';
+    room.verityArguments.clear();
     for (const p of room.players.values()) if (p.away) room.game.setAway(p.id, true); // still rejoining
     broadcastLobby(room);
 
