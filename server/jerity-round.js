@@ -165,23 +165,27 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
       ]).finally(() => { clearTimeout(timer); abort.signal.removeEventListener('abort', onAbort); });
       if (!current()) return;
       mood = result.internalState?.mood || mood;
-      const event = result.events?.[0];
-      focusId = Array.isArray(event?.target) ? event.target[0] : event?.target;
-      const lines = result.audioBuffers || [];
-      const eligible = targetsAvailable(event);
-      setPhase('speaking');
-      if (eligible) {
-        for (const line of lines.filter(l => l.timing === 'before_effect')) await speak(line);
-      }
-      if (!current()) return;
-      const applied = !!(eligible && targetsAvailable(event) && event && event.action !== 'none' && game.applyJerityAction(event));
-      actionAt = Date.now();
-      broadcast(S2C.JERITY_RULING, { roundId, events: applied ? [event] : [], applied });
-      broadcast(S2C.SNAP, game.snapshot());
-      setPhase('effect');
-      // A target can die during the before line. Do not claim an effect that did not happen.
-      if (!event || event.action === 'none' || applied) {
-        for (const line of lines.filter(l => l.timing !== 'before_effect')) await speak(line);
+      const events = (result.events || []).slice(0, JERITY.MAX_ACTIONS);
+      for (const [eventIndex, event] of events.entries()) {
+        if (!current() || game.over()) break;
+        focusId = Array.isArray(event.target) ? event.target[0] : event.target;
+        const lines = (result.audioBuffers || []).filter(line =>
+          line.eventIndex === eventIndex || (events.length === 1 && line.eventIndex == null));
+        const eligible = targetsAvailable(event);
+        setPhase('speaking');
+        if (eligible) {
+          for (const line of lines.filter(l => l.timing === 'before_effect')) await speak(line);
+        }
+        if (!current() || game.over()) break;
+        const applied = !!(eligible && targetsAvailable(event) && event.action !== 'none' && game.applyJerityAction(event));
+        actionAt = Date.now();
+        broadcast(S2C.JERITY_RULING, { roundId, eventIndex, events: applied ? [event] : [], applied });
+        broadcast(S2C.SNAP, game.snapshot());
+        setPhase('effect');
+        // A target can die during its announcement. Other events remain independent.
+        if (!game.over() && (event.action === 'none' || applied)) {
+          for (const line of lines.filter(l => l.timing === 'after_effect')) await speak(line);
+        }
       }
     } catch (error) {
       if (current()) console.error('Jerity round exchange failed:', error.message);

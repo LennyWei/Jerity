@@ -52,15 +52,18 @@ after capture, when disabled, on disconnect, and when leaving the game screen.
 Permission denial or unsupported recording does not prevent playing.
 
 The server accepts one bounded recording per human player, allows 1.5 seconds
-for upload, transcribes the recordings together, and requests one AI action.
-It plays the before line, applies the action, publishes the resulting state,
-then plays the after line. Cars keep driving and the round clock keeps ticking
+for upload, transcribes the recordings together, and requests up to three coordinated AI actions.
+Each action has its own indexed before/after dialogue pair. It plays that action's
+before line, applies it, publishes the resulting state, then plays its after line
+before moving to the next action. Dead targets are skipped independently.
+The prompt encourages a shared chaotic theme while keeping each pair accurate
+and independent; batches missing indexed dialogue fall back to doing nothing. Cars keep driving and the round clock keeps ticking
 throughout the invitation, recording, AI/TTS requests, and voice playback.
 Targets are checked again at application time: dead or disconnected players get
 no effect, and Jerity skips the success follow-up. A decided round cancels any
 pending requests or playback. Temporary effects start when actually applied.
 After each exchange finishes (including the after line), Jerity waits a random
-1–4 seconds, then invites players to speak again for six seconds. Exchanges never
+6–9 seconds, then invites players to speak again for six seconds. Exchanges never
 overlap. Each gets a new recording/playback ID, and ending the round cancels both
 the current exchange and its cooldown so no late effect or new invitation occurs.
 Each connected player's playback completion advances the exchange; a 15-second

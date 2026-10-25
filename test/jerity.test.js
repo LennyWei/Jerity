@@ -104,19 +104,19 @@ test('ending the round during processing prevents late effects and further excha
   assert.equal(calls, 1);
   assert.equal(game.cars.get('a').buff, BUFF.NONE);
 });
-function setup({ pipeline, onEvent, customLimits, roundNumber = 1 } = {}) {
-  const game = createGame(roster), events = [];
+function setup({ pipeline, onEvent, customLimits, roundNumber = 1, customRoster = roster } = {}) {
+  const game = createGame(customRoster), events = [];
   let listeningReady;
   const listening = new Promise(resolve => { listeningReady = resolve; });
   let current = true;
   const cycle = createJerityRound({ game, pipeline: pipeline || { runCycle: async () => ruling() },
-    players: () => roster, limits: customLimits || limits, isCurrent: () => current, roundNumber,
+    players: () => customRoster, limits: customLimits || limits, isCurrent: () => current, roundNumber,
     broadcast: (type, payload) => {
       events.push({ type, payload });
       if (type === S2C.JERITY_STATE && payload.phase === 'listening') listeningReady();
       onEvent?.(type, payload, game);
       if (type === S2C.JERITY_VOICE) queueMicrotask(() => {
-        for (const p of roster) cycle.played(p.id, payload);
+        for (const p of customRoster) cycle.played(p.id, payload);
       });
     },
   });
@@ -197,7 +197,7 @@ test('a target killed during the before line receives no effect or success line'
   } });
   await cycle.start();
   assert.equal(game.cars.get('a').buff, BUFF.NONE);
-  assert.equal(events.find(e => e.type === S2C.JERITY_RULING).payload.applied, false);
+  assert.ok(!events.some(e => e.type === S2C.JERITY_RULING && e.payload.applied));
   assert.ok(!events.some(e => e.type === S2C.JERITY_VOICE && e.payload.timing === 'after_effect'));
 });
 
@@ -261,7 +261,7 @@ test('game honors bounded parameters, target arrays and obstacle expiry', () => 
   assert.equal(game.snapshot().obstaclesDisabled, false);
 });
 
-test('real pipeline carries STT text to the model and returns before/after TTS audio', async () => {
+test('real pipeline carries STT text to the model and preserves dialogue for multiple actions through TTS', async () => {
   const priorFetch = globalThis.fetch;
   const saved = Object.fromEntries(['GROQ_API_KEY', 'FISH_AUDIO_API_KEY', 'FISH_AUDIO_VOICE_ID'].map(key => [key, process.env[key]]));
   Object.keys(saved).forEach(key => { process.env[key] = 'offline-test'; });
@@ -281,16 +281,20 @@ test('real pipeline carries STT text to the model and returns before/after TTS a
       assert.match(prompt, /Give Alice a boost please/);
       assert.match(prompt, /Alice/);
       return { modelUsed: 'offline', result: {
-        events: ruling().events, internalState: ruling().internalState,
-        voiceLines: ruling().audioBuffers.map(({ text, timing }) => ({ text, timing })),
+        events: [...ruling().events, { action: 'freeze_player', target: 'b', params: { duration: 3 } }], internalState: ruling().internalState,
+        voiceLines: [...ruling().audioBuffers.map(({ text, timing }) => ({ text, timing, eventIndex: 0 })),
+          { eventIndex: 1, timing: 'before_effect', text: 'Bob, time to freeze.' },
+          { eventIndex: 1, timing: 'after_effect', text: 'Bob, parking looks good on you.' }],
       } };
     };
-    const result = await pipeline.runCycle({ players: { a: { hp: 100, maxHp: 100, name: 'Alice' } }, timeLeft: 90 },
+    const result = await pipeline.runCycle({ players: { a: { hp: 100, maxHp: 100, name: 'Alice' }, b: { hp: 100, name: 'Bob' } }, timeLeft: 90 },
       [{ playerId: 'a', ...recording }]);
-    assert.equal(result.audioBuffers.length, 2);
+    assert.equal(result.audioBuffers.length, 4);
+    assert.deepEqual(result.audioBuffers.map(line => line.eventIndex), [0, 0, 1, 1]);
+    assert.equal(result.events.length, 2);
     assert.ok(result.audioBuffers.every(line => Buffer.isBuffer(line.audio)));
     assert.equal(result.events[0].action, 'boost_player');
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 5);
     assert.equal(pipeline.getState().eventCount, 1);
   } finally {
     globalThis.fetch = priorFetch;
@@ -298,6 +302,67 @@ test('real pipeline carries STT text to the model and returns before/after TTS a
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
+});
+
+test('multi-action playback stays paired and skips a dead target without skipping other actions', async () => {
+  for (const killTarget of [false, true]) {
+    const batch = {
+      events: [
+        { action: 'boost_player', target: 'a', params: { duration: 3 } },
+        { action: 'freeze_player', target: 'b', params: { duration: 3 } },
+        { action: 'shield_player', target: 'c', params: { duration: 3 } },
+      ],
+      audioBuffers: [0, 1, 2].flatMap(eventIndex => ['before_effect', 'after_effect'].map(timing =>
+        ({ eventIndex, timing, text: `${eventIndex} ${timing}`, audio: Buffer.from('mp3') }))),
+    };
+    const { cycle, game, events } = setup({ customRoster: [...roster, { id: 'c', name: 'Cara' }],
+      pipeline: { runCycle: async () => batch },
+      onEvent(type, payload, g) {
+        if (killTarget && type === S2C.JERITY_VOICE && payload.text === '0 before_effect') {
+          g.cars.get('a').hp = 1;
+          g.applyJerityAction({ action: 'damage_player', target: 'a', params: { amount: 10 } });
+        }
+      },
+    });
+    await cycle.start();
+    assert.equal(game.cars.get('a').buff, killTarget ? BUFF.NONE : BUFF.BOOST);
+    assert.ok(game.cars.get('b').frozenUntil > 0);
+    assert.equal(game.cars.get('c').buff, BUFF.SHIELD);
+    const order = events.filter(e => e.type === S2C.JERITY_RULING ||
+      (e.type === S2C.JERITY_VOICE && e.payload.timing !== 'listening_cue'))
+      .map(e => e.type === S2C.JERITY_VOICE ? e.payload.text : `${e.payload.eventIndex} applied:${e.payload.applied}`);
+    assert.deepEqual(order, [ '0 before_effect', `0 applied:${!killTarget}`, ...(!killTarget ? ['0 after_effect'] : []),
+      '1 before_effect', '1 applied:true', '1 after_effect', '2 before_effect', '2 applied:true', '2 after_effect' ]);
+  }
+});
+
+test('a batch without dialogue for every action safely falls back to no action', async () => {
+  const pipeline = new VerityPipeline();
+  pipeline.verity.callGeminiWithFallback = async () => ({ modelUsed: 'offline', result: {
+    events: [...ruling().events, { action: 'freeze_player', target: 'b', params: {} }],
+    voiceLines: ruling().audioBuffers.map(({ text, timing }) => ({ text, timing, eventIndex: 0 })),
+  } });
+  const result = await pipeline.runCycleSimulated({ players: { a: { hp: 100 }, b: { hp: 100 } }, timeLeft: 90 },
+    [{ playerId: 'a', text: 'Help me!' }], { skipTts: true });
+  assert.equal(result.events.length, 1);
+  assert.equal(result.events[0].action, 'none');
+});
+
+test('an action ending the round prevents the remaining batch and its dialogue', async () => {
+  const batch = {
+    events: [{ action: 'damage_player', target: 'a', params: { amount: 10 } },
+      { action: 'boost_player', target: 'b', params: { duration: 3 } }],
+    audioBuffers: [0, 1].flatMap(eventIndex => ['before_effect', 'after_effect'].map(timing =>
+      ({ eventIndex, timing, text: `${eventIndex} ${timing}`, audio: Buffer.from('mp3') }))),
+  };
+  const { cycle, game, events } = setup({ pipeline: { runCycle: async () => batch } });
+  game.cars.get('a').hp = 1;
+  await cycle.start();
+  assert.equal(game.over(), true);
+  assert.equal(game.cars.get('b').buff, BUFF.NONE);
+  assert.deepEqual(events.filter(e => e.type === S2C.JERITY_VOICE && e.payload.timing !== 'listening_cue')
+    .map(e => e.payload.text), ['0 before_effect']);
+  assert.equal(events.filter(e => e.type === S2C.JERITY_RULING).length, 1);
 });
 
 test('Socket.IO room starts the exchange after countdown and broadcasts the action to a spectator', { timeout: 12000 }, async () => {
