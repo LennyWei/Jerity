@@ -21,6 +21,9 @@ import { createInterp } from '../interp.js';
 import * as input from '../input.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
 import { connectJerity } from '../jerity-round.js';
+import { playEvents, playCountdown, playRoundEnd } from '../sfx.js';
+import { victorySplash } from './results.js';
+import { colorOf } from '../ui.js';
 
 const CSS = `
 .bb-game { position: fixed; inset: 0; background: #0b0d12; overflow: hidden;
@@ -150,6 +153,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     clearTimeout(goTimer);
     count = seconds;
     if (seconds <= 0) goTimer = setTimeout(() => { count = null; }, 600);
+    playCountdown(seconds, { small: true });
   }
   if (countdown != null) onCountdown({ seconds: countdown });
   else if (playerId) input.calibrate(800); // joined mid-round: no countdown to calibrate in
@@ -162,11 +166,27 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
       trackSpeed(snap);
     }),
     listen(net, S2C.LOBBY, (l) => { renderer.setPlayers(l.players); renderer.setMap(l.map); names = new Map(l.players.map((p) => [p.id, p.name])); roundOf = l; }),
+    // Round decided: the arena keeps running for the victory lap (the winner can still drive,
+    // nothing does damage) under the win splash; ROUND_END then goes straight to the scoreboard.
+    listen(net, S2C.ROUND_DECIDED, (d) => {
+      decided = true;
+      renderer.setWinner(d.winnerId);
+      const players = roundOf?.players || [], i = players.findIndex((p) => p.id === d.winnerId);
+      const won = !!d.winnerId && d.winnerId === playerId;
+      const splash = victorySplash({
+        name: won ? 'You' : names.get(d.winnerId) || 'Someone', color: colorOf(players[i], Math.max(0, i)),
+        title: ' Won!', sub: typeof d.round === 'number' ? `Round ${d.round} of ${d.rounds}` : null, draw: !d.winnerId,
+      });
+      splash.classList.add('rs-over-arena', 'rs-lap');
+      el.append(splash);
+      playRoundEnd({ won, small: true });
+    }),
     listen(net, S2C.ROUND_END, (res) => {
       stopSending();
-      onRoundEnd?.(res);
+      onRoundEnd?.({ ...res, splashShown: decided });
     }),
   ];
+  let decided = false; // this round's win splash already showed during the victory lap
 
   function stopSending() {
     if (sending) input.stopSending();
@@ -304,6 +324,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     const view = interp.sample(now);
     const events = interp.takeEvents();
     renderer.addEvents(events, view);
+    playEvents(events, { me: playerId, small: true }); // a phone only sounds the events you are in
     verity.react(events, { me: playerId, nameOf });
     const flip = updateOwnState();
     const showTilt = !!playerId && myState !== CAR_STATE.DEAD;

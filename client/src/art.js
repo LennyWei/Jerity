@@ -116,8 +116,10 @@ export function drawWreck(ctx, { w = 40, h = 24 } = {}) {
  * One obstacle. o: { x, y, r } (bollard or, with kind 'tire', a tire stack) or
  * { kind: 'box', x, y, w, h, a } (rubber barrier). pal: arena palette. hit: 0..1 just-hit glow.
  * glow: neon bloom on the warning ring, as a shadowBlur in device pixels (0 = none).
+ * t: seconds, to move the patterns: barrier stripes run along like a conveyor belt, bollard
+ * and tire rings spin (different speeds and ways). 0 = still (the menu).
  */
-export function drawObstacle(ctx, o, pal, hit = 0, glow = 0) {
+export function drawObstacle(ctx, o, pal, hit = 0, glow = 0, t = 0) {
   ctx.save();
   ctx.translate(o.x, o.y);
   const squash = hit > 0 ? 1 - hit * 0.08 : 1;
@@ -131,7 +133,8 @@ export function drawObstacle(ctx, o, pal, hit = 0, glow = 0) {
     roundRect(ctx, -o.w / 2 + 3, -o.h / 2 + 3, o.w - 6, o.h - 6, (o.h - 6) / 2);
     ctx.clip();
     ctx.fillStyle = pal.dash;
-    for (let x = -o.w / 2 - o.h; x < o.w / 2 + o.h; x += 16) {
+    const shift = ((t * 22) % 16 + 16) % 16; // conveyor belt: the stripes keep running along the bar
+    for (let x = -o.w / 2 - o.h - 16 + shift; x < o.w / 2 + o.h; x += 16) {
       ctx.beginPath();
       ctx.moveTo(x, o.h / 2); ctx.lineTo(x + 8, o.h / 2); ctx.lineTo(x + 8 + o.h, -o.h / 2); ctx.lineTo(x + o.h, -o.h / 2);
       ctx.fill();
@@ -144,8 +147,10 @@ export function drawObstacle(ctx, o, pal, hit = 0, glow = 0) {
     ctx.strokeStyle = '#34303a'; // tread
     ctx.lineWidth = 3;
     ctx.setLineDash([4, 4]);
+    ctx.lineDashOffset = -t * 14; // the tread rolls clockwise
     ctx.beginPath(); ctx.arc(0, 0, o.r - 3, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
     ctx.fillStyle = pal.floor; // the hole in the middle
     ctx.beginPath(); ctx.arc(0, 0, o.r * 0.42, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = pal.pillarEdge;
@@ -165,10 +170,12 @@ export function drawObstacle(ctx, o, pal, hit = 0, glow = 0) {
     ctx.strokeStyle = pal.dash;
     ctx.lineWidth = o.r * 0.14;
     ctx.setLineDash([o.r * 0.32, o.r * 0.26]);
+    ctx.lineDashOffset = t * 24; // the warning band spins counter-clockwise, faster than the border
     if (glow) { ctx.shadowColor = pal.dash; ctx.shadowBlur = glow; }
     ctx.beginPath(); ctx.arc(0, 0, o.r * 0.55, 0, Math.PI * 2); ctx.stroke();
     ctx.shadowBlur = 0;
     ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
   }
   if (hit > 0) { // just hit: a bright ring
     ctx.globalAlpha = hit;

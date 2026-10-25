@@ -267,6 +267,15 @@ const headonDmg = v => CONFIG.DMG_K * v * v * CONFIG.HEADON_MULT; // from the ot
   near('round score: 10 s survived, nothing else', roundScore({ damage: 0, kills: 0, won: false, survived: 10 }),
     10 * CONFIG.SCORE_PER_SURVIVAL_S, 0, 'pts');
 }
+{
+  // Victory lap: the round is decided, so cars still drive and bounce but nothing does damage.
+  const { game, cars: [a, b] } = setup({ x: 28.35, y: 10, v: 10 }, { x: 30, y: 10, a: NORTH });
+  game.celebrate();
+  const hpA = a.hp, hpB = b.hp, evs = [];
+  run(game, [COAST, COAST], CONFIG.TICK_HZ, () => { evs.push(...game.snapshot().events); });
+  check('victory lap: a full-speed side ram does no damage', a.hp === hpA && b.hp === hpB && !evs.some(e => e.type === EVENT.HIT),
+    `A ${hpA}->${a.hp}, B ${hpB}->${b.hp}`);
+}
 
 console.log('\nKnockback (no grinding, no sliding along, room to steer past)');
 const fwdSpeed = car => Vec2.dot(car.body.getWorldVector(Vec2(1, 0)), car.body.getLinearVelocity());

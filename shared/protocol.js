@@ -36,6 +36,8 @@ export const S2C = {
   COUNTDOWN: 'countdown', // { seconds }
   SNAP:      'snap',      // Snapshot
   ROUND_END: 'roundEnd',  // RoundEnd
+  ROUND_DECIDED: 'roundDecided', // { winnerId, round?, rounds?, lapMs }: last car standing (or time up); the
+                                 //   arena runs a victory lap (no damage) for lapMs, then ROUND_END
   ERROR:     'err',       // { message }
   HELLO:     'hello',     // { bootId, jerity?: { protocolVersion, configured, missing } } on connect
 };

@@ -98,6 +98,7 @@ export function createRenderer(canvas, opts = {}) {
   const smoke = [];       // exhaust puffs: { x, y, vx, vy, r0, r1, life, max, dark }
   const dust = [];        // specks drifting over the floor in two layers (near ones faster: parallax)
   let lastTimeLeft = Infinity; // the round timer jumping back up = a new round: clear the marks
+  let winnerId = null;    // the victory lap's winner: a gold ring and a crown
 
   // -------------------------------------------------------------------------
   // Layout
@@ -414,6 +415,7 @@ export function createRenderer(canvas, opts = {}) {
     for (const c of order) if (c.s !== CAR_STATE.DEAD) drawCarShadow(c);
     for (const c of order) drawCar(c, now);
     for (const c of order) if (c.s !== CAR_STATE.DEAD) drawHpBar(c);
+    drawWinner(cars, now);
     drawEffects();
 
     // Screen space (CSS pixels)
@@ -491,10 +493,37 @@ export function createRenderer(canvas, opts = {}) {
     return c.s === CAR_STATE.FLIPPED ? 1 : 2;
   }
 
+  /** Victory lap: a pulsing gold ring around the round's winner and a crown over the car. */
+  function drawWinner(cars, now) {
+    const c = winnerId && cars.find((x) => x.id === winnerId);
+    if (!c || c.s === CAR_STATE.DEAD) return;
+    const pulse = 1 + Math.sin(now / 180) * 0.08;
+    ctx.save();
+    glow('#f6b93b', 14);
+    ctx.strokeStyle = '#f6b93b';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(c.x, c.y, 34 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(c.x, c.y, 45 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+    const x = c.x, y = c.y - 52 + Math.sin(now / 240) * 2; // the crown bobs above the HP bar
+    ctx.fillStyle = '#f6b93b';
+    ctx.beginPath();
+    ctx.moveTo(x - 13, y + 7); ctx.lineTo(x - 13, y - 5); ctx.lineTo(x - 6.5, y + 1); ctx.lineTo(x, y - 9);
+    ctx.lineTo(x + 6.5, y + 1); ctx.lineTo(x + 13, y - 5); ctx.lineTo(x + 13, y + 7); ctx.closePath();
+    ctx.fill();
+    noGlow();
+    ctx.strokeStyle = '#8a5a0c';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
   /** Phone: a bobbing "YOU" tag with an arrow over your car (under it near the top wall). */
   function drawYouMarker(cars, now) {
     const mine = cars.find((c) => c.id === me);
-    if (!mine || mine.s === CAR_STATE.DEAD) return;
+    if (!mine || mine.s === CAR_STATE.DEAD || winnerId === me) return; // the winner wears the crown instead
     const sx = ox + mine.x * scale, sy = oy + mine.y * scale;
     const bob = Math.sin(now / 200) * 3 * ui;
     const aw = 8 * ui, ah = 9 * ui, th = 20 * ui;
@@ -593,6 +622,7 @@ export function createRenderer(canvas, opts = {}) {
   function clearRoundMarks() {
     debris.length = 0; scars.length = 0; blasts.length = 0; smoke.length = 0; skids.length = 0;
     scarred.clear(); deadSince.clear();
+    winnerId = null;
   }
 
   /** Scorch marks: charred blots, and embers that cool to a faint glow that stays as a record. */
@@ -811,33 +841,55 @@ export function createRenderer(canvas, opts = {}) {
     }
     ctx.globalAlpha = 1;
 
-    // painted markings: center circle, dashed ring, spawn pads
+    // painted markings: center circle, and the dashed ring around it turning slowly
     ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 6;
     ctx.beginPath(); ctx.arc(W / 2, H / 2, 70, 0, Math.PI * 2); ctx.stroke();
     ctx.lineWidth = 3;
     ctx.setLineDash([14, 12]);
+    ctx.lineDashOffset = t * 12; // the opposite way to the border, slowly
     ctx.beginPath(); ctx.arc(W / 2, H / 2, 120, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
-    for (const s of SPAWN_POINTS) {
-      ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI * 2); ctx.stroke();
-    }
+    ctx.lineDashOffset = 0;
 
-    // Walls: rubber bumper with hazard dashes
+    // Spawn pads in their player's color, glowing (players spawn in join order: SPAWN_POINTS[i]).
+    const order = [...players.keys()];
+    SPAWN_POINTS.forEach((s, i) => {
+      ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI * 2);
+      if (!order[i]) { ctx.strokeStyle = pal.grid; ctx.lineWidth = 3; ctx.stroke(); return; } // nobody starts here
+      const color = colorOf(order[i]);
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      glow(color, 10);
+      ctx.stroke();
+      noGlow();
+      ctx.globalAlpha = 1;
+    });
+
+    // Walls: rubber bumper with hazard dashes creeping slowly around the rink, glowing
     ctx.lineWidth = 8;
     ctx.strokeStyle = pal.wall;
     ctx.strokeRect(4, 4, W - 8, H - 8);
     ctx.setLineDash([24, 24]);
+    ctx.lineDashOffset = -t * 18;
     ctx.lineWidth = 3;
     ctx.strokeStyle = pal.dash;
+    glow(pal.dash, 9);
     ctx.strokeRect(4, 4, W - 8, H - 8);
+    noGlow();
     ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
     // fence posts along the walls
     ctx.fillStyle = pal.wall;
     for (let x = 100; x < W; x += 100) { ctx.fillRect(x - 4, 0, 8, 10); ctx.fillRect(x - 4, H - 10, 8, 10); }
     for (let y = 100; y < H; y += 100) { ctx.fillRect(0, y - 4, 10, 8); ctx.fillRect(W - 10, y - 4, 10, 8); }
 
     for (const o of obstacles) { // shadows first, so every obstacle stands up off the floor
+      if (obstaclesDisabled) break;
       ctx.save();
       ctx.translate(o.x + 4, o.y + 6);
       ctx.rotate(o.a || 0);
@@ -853,7 +905,7 @@ export function createRenderer(canvas, opts = {}) {
     obstacles.forEach((o, i) => {
       if (obstaclesDisabled) return;
       const since = lastNow - (obstacleHitAt.get(i) ?? -1e9);
-      drawObstacle(ctx, o, pal, since < 260 ? 1 - since / 260 : 0, ringGlow);
+      drawObstacle(ctx, o, pal, since < 260 ? 1 - since / 260 : 0, ringGlow, t); // t: moving patterns
     });
   }
 
@@ -1382,6 +1434,8 @@ export function createRenderer(canvas, opts = {}) {
     setMe: (id) => { me = id; },
     /** Arena layout from the lobby (a key of MAPS). */
     setMap: (id) => { obstacles = MAPS[id]?.obstacles ?? MAPS[DEFAULT_MAP]?.obstacles ?? OBSTACLES; obstacleHitAt.clear(); },
+    /** The victory lap's winner (gold ring and crown), or null. */
+    setWinner: (id) => { winnerId = id || null; },
     setFx: (level) => { fx = FX_SCALE[level] ?? fx; },
     fps: () => fpsAvg,
   };

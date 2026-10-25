@@ -34,6 +34,7 @@ export function createGame(players, mapId = DEFAULT_MAP) {
   let now = 0;
   let timeLeft = CONFIG.ROUND_TIME_S;
   let persuasionKillUsed = false;
+  let celebrating = false;  // the round is decided: cars still drive and bounce, nothing does damage
   let obstaclesOffUntil = 0;
   const arenaObstacles = [];
   let lastSnapT = 0;
@@ -465,6 +466,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
   // ---------------------------------------------------------------------------
 
   function handleContacts() {
+    if (celebrating) { contacts.length = 0; return; } // victory lap: bumps just bounce
     for (const c of contacts.splice(0)) {
       if (c.a && c.b) carContact(c);
       else if (c.a || c.b) wallContact(c);
@@ -716,6 +718,8 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
     get now() { return now; },
     step, snapshot, spawn, remove, setAway,
     over, winnerId, survivedS, applyJerityAction,
+    /** The round is decided: keep driving for the victory lap, but nothing hurts anymore. */
+    celebrate() { celebrating = true; },
   };
 }
 

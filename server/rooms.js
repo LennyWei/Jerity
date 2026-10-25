@@ -51,6 +51,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
       players: new Map(), // id -> player, in join order (the oldest human inherits host)
       game: null,         // set from countdown to the end of the results screen
       match: null,        // { round, totals: id -> match totals } from Start to the final standings
+      result: null,       // the decided round's { winnerId, leaderboard } during its victory lap
       timers: [],
       jerity: null,
     };
@@ -166,6 +167,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
   function startCountdown(room) {
     clearTimers(room);
     room.match.round += 1;
+    room.result = null; // decided at the end of this round (decideRound)
     room.state = ROOM_STATE.COUNTDOWN;
     for (const p of room.players.values()) p.input = { ...NO_INPUT };
     room.game = createGame([...room.players.values()], room.map);
@@ -197,11 +199,11 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
     later(room, step, 1000);
   }
 
-  function endRound(room) {
+  // The round is decided (last car standing, or time up). The results are frozen right now; the
+  // arena keeps running for a VICTORY_LAP_MS victory lap (nothing does damage) so everyone sees
+  // the winner and the last KO under the win splash, and then endRound shows the scoreboard.
+  function decideRound(room) {
     const { game } = room;
-    room.state = ROOM_STATE.ROUND_END;
-    io.to(room.code).emit(S2C.SNAP, game.snapshot()); // last events (often the final KO) first
-
     const winnerId = game.winnerId();
     const leaderboard = [...room.players.values()].map(p => {
       const st = game.stats.get(p.id) || { kills: 0, damage: 0 };
@@ -218,9 +220,20 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
       return row;
     }).sort((a, b) => b.score - a.score);
 
+    room.result = { winnerId, leaderboard };
+    game.celebrate();
+    io.to(room.code).emit(S2C.ROUND_DECIDED, {
+      winnerId, round: room.match.round, rounds: CONFIG.ROUNDS_PER_MATCH, lapMs: CONFIG.VICTORY_LAP_MS,
+    });
+    later(room, () => endRound(room), CONFIG.VICTORY_LAP_MS);
+  }
+
+  function endRound(room) {
+    room.state = ROOM_STATE.ROUND_END;
+    io.to(room.code).emit(S2C.SNAP, room.game.snapshot()); // the lap's last events first
     const final = matchOver(room);
     io.to(room.code).emit(S2C.ROUND_END, {
-      winnerId, leaderboard,
+      ...room.result,
       round: room.match.round, rounds: CONFIG.ROUNDS_PER_MATCH, final, match: standings(room),
     });
     broadcastLobby(room);
@@ -265,7 +278,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
   function tickRoom(room, dt) {
     if (room.state !== ROOM_STATE.PLAYING || room.jerity?.busy) return;
     room.game.step(takeInputs(room), dt);
-    if (room.game.over()) endRound(room);
+    if (!room.result && room.game.over()) decideRound(room);
   }
 
   // One input per player for this tick. Taps are consumed here, so each one counts exactly once.

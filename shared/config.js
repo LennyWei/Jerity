@@ -85,8 +85,9 @@ export const CONFIG = {
   COUNTDOWN_S: 4,
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
   ROUNDS_PER_MATCH: 5,   // Start plays this many rounds; the final standings rank by performance score
-  RESULTS_MS: 7500,      // between rounds: the winner splash (VICTORY_SPLASH_MS), then the standings, then the next round
-  VICTORY_SPLASH_MS: 2600, // "[trophy] Name Won!" before the standings (client)
+  VICTORY_LAP_MS: 5000,  // round decided: the arena keeps running (no damage) under the win splash, then the results
+  RESULTS_MS: 6000,      // between rounds: the standings (the win splash already played during the lap), then the next round
+  VICTORY_SPLASH_MS: 2600, // "[trophy] Name Won!" when no lap showed it (the final's match winner, older servers)
   MATCH_RESULTS_MS: 15000, // final standings after the last round, then back to the lobby (TEST room: a new match)
   DEV_MIN_PLAYERS: 1,    // used when the room was created with bots
   DISCONNECT_GRACE_MS: 15000, // a dropped phone keeps its car (a frozen ghost) this long to rejoin

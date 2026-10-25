@@ -14,6 +14,7 @@ import { h, colorOf } from '../ui.js';
 import { mountVerity, LINES } from '../verity-ui.js';
 import { CONFIG } from '../../../shared/config.js';
 import { PLAYER_COLORS } from '../../../shared/constants.js';
+import { playRoundEnd } from '../sfx.js';
 
 const MEDALS = ['gold', 'silver', 'bronze'];
 const MEDAL_HEX = { gold: '#f6b93b', silver: '#c3cad6', bronze: '#cd7f32' };
@@ -42,6 +43,7 @@ export function mount(root, { result, lobby, playerId, onPlayAgain }) {
   const winnerId = final ? standings[0].id : result.winnerId;
   const winnerName = final ? standings[0].name : players.get(result.winnerId)?.name || (result.winnerId ? 'Someone' : '');
   const won = !!winnerId && winnerId === playerId;
+  const lapShown = !!result.splashShown && !final; // the victory lap already showed this round's winner
   const splash = victorySplash({
     name: won ? 'You' : winnerName, color: winnerId ? colorFor(winnerId) : undefined,
     title: final ? (won ? ' Win the Match!' : ' Wins the Match!') : ' Won!',
@@ -95,23 +97,32 @@ export function mount(root, { result, lobby, playerId, onPlayAgain }) {
         note(`Score = damage dealt + ${CONFIG.SCORE_KILL} per KO + ${CONFIG.SCORE_WIN} for the win`)));
   }
 
-  const el = h(`div.screen.center.crt.rs${final ? '.rs-is-final' : ''}`, {}, splash, body);
+  // The final gets a soft pale-yellow light behind the middle, so the late (dark) Verity stages
+  // don't swallow it; paler than the 1st-place gold so that still stands out.
+  const el = h(`div.screen.center.crt.rs${final ? '.rs-is-final' : ''}`, {}, final ? h('div.rs-glow') : null, splash, body);
   root.append(el);
+  if (!lapShown) playRoundEnd({ won, final, small: true }); // the winner's jingle, or a soft "round over"
   const verity = mountVerity(helper, { lines: LINES.results, name: () => players.get(playerId)?.name });
   verity.verdict({ won, winner: winnerName });
 
   // The splash gets its full time while someone is looking: a phone that was asleep or in the
   // background when the round ended (you got knocked out and put it down) still shows it first.
-  let toBoard = 0;
+  let toBoard = 0, slideIn = 0;
+  const showBoard = () => { splash.classList.add('rs-out'); el.classList.add('rs-board-on'); };
   const startSplash = () => {
     if (toBoard || document.visibilityState === 'hidden') return;
-    toBoard = setTimeout(() => { splash.classList.add('rs-out'); el.classList.add('rs-board-on'); },
-      (CONFIG.VICTORY_SPLASH_MS ?? 2600) + (final ? 700 : 0));
+    toBoard = setTimeout(showBoard, (CONFIG.VICTORY_SPLASH_MS ?? 2600) + (final ? 700 : 0));
   };
-  document.addEventListener('visibilitychange', startSplash);
-  startSplash();
+  if (lapShown) { // straight to the scoreboard, sliding in (the splash stays hidden)
+    splash.classList.add('rs-out');
+    slideIn = requestAnimationFrame(() => { slideIn = requestAnimationFrame(showBoard); });
+  } else {
+    document.addEventListener('visibilitychange', startSplash);
+    startSplash();
+  }
   return () => {
     clearTimeout(toBoard);
+    cancelAnimationFrame(slideIn);
     document.removeEventListener('visibilitychange', startSplash);
     verity.destroy();
     el.remove();
@@ -191,6 +202,17 @@ const CSS = `
 .rs-splash.rs-over-arena { position: absolute; z-index: 30; color: #f4f1ea;
   background: radial-gradient(circle at 50% 45%, rgba(0,0,0,.6), rgba(0,0,0,.3) 75%); }
 .rs-over-arena .rs-sub { color: #d9d3c7; }
+/* Victory lap: over the live game, lighter and smaller so the winner's lap shows through; taps go through */
+.rs-splash.rs-lap { z-index: 4; pointer-events: none; justify-content: flex-start; padding-top: 7vh;
+  background: radial-gradient(ellipse 72% 58% at 50% 34%, rgba(10,8,12,.55), rgba(10,8,12,.22) 60%, transparent 86%); }
+.rs-lap .rs-rays { top: 26%; opacity: .55; }
+.rs-lap .rs-trophy { width: min(96px, 22vh); }
+.rs-lap .rs-title { font-size: clamp(26px, 8vh, 58px); color: #fff; text-shadow: 0 2px 0 rgba(0,0,0,.55), 0 0 16px rgba(0,0,0,.65); }
+.rs-lap .rs-sub { color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.85), 0 0 10px rgba(0,0,0,.6); }
+/* Final: a soft pale-yellow light behind the middle (paler than the 1st-place gold) */
+.rs-glow { position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 64% 58% at 50% 55%, rgba(255,246,200,.8), rgba(255,238,170,.36) 45%, transparent 76%); }
+.rs-is-final .rs-body { position: relative; z-index: 1; }
 .rs-rays { position: absolute; left: 50%; top: 45%; width: 160vmax; height: 160vmax; margin: -80vmax 0 0 -80vmax; z-index: -1;
   background: repeating-conic-gradient(rgba(246,185,59,.2) 0deg 9deg, transparent 9deg 18deg);
   -webkit-mask: radial-gradient(circle, #000 0, #000 12%, transparent 46%); mask: radial-gradient(circle, #000 0, #000 12%, transparent 46%);
