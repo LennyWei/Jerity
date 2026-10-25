@@ -31,5 +31,6 @@ export async function speakVerity(message) {
   await writeFile(resolve(dir, "verity-output.mp3"), audio);
 
   console.log("VERITY voice generated!");
+
   return audio;
 }
