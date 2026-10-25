@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "dev:test": "node --watch server/index.js --test-room",
     "sim": "node server/sim.js",
     "fake": "node server/fake.js",
     "fake:client": "node server/fake-client.js",

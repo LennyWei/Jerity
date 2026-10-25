@@ -90,7 +90,7 @@ console.log('Driving (design.md section 4)');
 }
 {
   // Regression: a car steering from rest used to stay stuck at MIN_SPEED.
-  const { game, cars: [car] } = setup({ x: 40, y: 6 }); // spirals inside x 34-43, y 4-12
+  const { game, cars: [car] } = setup({ x: 42, y: 15 }); // spirals inside x 36-48, y 15-26, clear of pillars
   run(game, [{ tilt: 0.8, accel: true, taps: 0 }], 2 * CONFIG.TICK_HZ);
   near('turning from rest (tilt 0.8): speed at 2 s', speed(car), spec.maxSpeed, 1, 'm/s');
 }

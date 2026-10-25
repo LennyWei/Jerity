@@ -13,6 +13,7 @@ import { CONFIG } from '../shared/config.js';
 import { createRooms } from './rooms.js';
 
 const PORT = process.env.PORT || 3000;
+if (process.argv.includes('--test-room')) process.env.TEST_ROOM = 'on'; // npm run dev:test (works on Windows too)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, '../client/dist');
 
