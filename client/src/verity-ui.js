@@ -5,24 +5,24 @@ import { CAR_STATE } from '../../shared/protocol.js';
 import { playVoice, stopVoice, soundMuted, setSoundMuted, unlockAudio,
   microphoneEnabled, enableMicrophone, disableMicrophone, onMicrophoneChange } from './jerity-audio.js';
 
-const visits = (Number(store.get('jerity-visits', '0')) || 0) + 1;
-store.set('jerity-visits', String(visits));
-let extra = Number(store.get('jerity-corruption', '0')) || 0, menuSeconds = 0;
+const VISITS_KEY = 'jerity-visits';
+const EXTRA_KEY = 'jerity-corruption';
+const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
+
+let visits = (Number(store.get(VISITS_KEY, '0')) || 0) + 1;
+store.set(VISITS_KEY, String(visits));
+let extra = Number(store.get(EXTRA_KEY, '0')) || 0, menuSeconds = 0;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-export const corruption = () => Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / 360);
+export const corruption = () => Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / (MINUTES_TO_FULL * 60));
 export const stageOf = c => c < 0.25 ? 0 : c < 0.5 ? 1 : c < 0.75 ? 2 : 3;
 function apply() {
   document.documentElement.style.setProperty('--corrupt', corruption().toFixed(3));
   document.documentElement.dataset.verityStage = String(stageOf(corruption()));
 }
 
-const VISITS_KEY = 'jerity-visits';
-const EXTRA_KEY = 'jerity-corruption';
-const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
-
 export function bumpCorruption(amount) {
   extra = Math.min(1, extra + amount);
-  store.set('jerity-corruption', extra.toFixed(3));
+  store.set(EXTRA_KEY, extra.toFixed(3));
   apply();
 }
 

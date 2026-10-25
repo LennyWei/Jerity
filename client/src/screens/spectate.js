@@ -10,11 +10,8 @@ import { CONFIG } from '../../../shared/config.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
-<<<<<<< HEAD
 import { connectJerity } from '../jerity-round.js';
-=======
 import { victorySplash } from './results.js';
->>>>>>> fe880f11333a849792be212c8a7c7460d89bb940
 
 export function mount(root, { net, code, onError }) {
   const canvas = h('canvas');
