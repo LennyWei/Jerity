@@ -1,10 +1,10 @@
 <!doctype html>
 <!-- Dev page: play on the real server (npm run dev) with Person 2's game screen.
      Stand-in until the real home/lobby screens exist; nothing else imports it.
-       /play-dev.html             join room TEST (3 bots, rounds loop forever)
-       /play-dev.html?room=ABCD   join a room by code
-       /play-dev.html?bots=3      make your own room with 3 bots and start it (restarts after each round)
-       &name=Sam                  your name
+       /dev/play-dev.html             join room TEST (3 bots, rounds loop forever)
+       /dev/play-dev.html?room=ABCD   join a room by code
+       /dev/play-dev.html?bots=3      make your own room with 3 bots and start it (restarts after each round)
+       &name=Sam                      your name
      Laptop: W or Up = accelerate, A/D or Left/Right = steer, Space = tap.
      Phone: tilt to steer. Phones only allow tilt on HTTPS, so open it through npm run dev:phone. -->
 <html lang="en">
@@ -24,8 +24,8 @@
 <div id="start"><button type="button">Tap to play</button><div id="msg"></div></div>
 <script type="module">
 import { io } from 'socket.io-client';
-import { mount, requestMotionPermission } from './src/screens/game.js';
-import { C2S, S2C, ROOM_STATE } from '../shared/protocol.js';
+import { mount, requestMotionPermission } from '../src/screens/game.js';
+import { C2S, S2C, ROOM_STATE } from '../../shared/protocol.js';
 
 const params = new URLSearchParams(location.search);
 const name = params.get('name') || 'Me';

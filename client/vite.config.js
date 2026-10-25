@@ -24,9 +24,9 @@ export default defineConfig(({ mode }) => ({
     rollupOptions: {
       input: {
         main: resolve(here, 'index.html'), // the game; the server sends it for /join/ABCD and /spectate/ABCD
-        gameDev: resolve(here, 'game-dev.html'),
-        snapView: resolve(here, 'snap-view.html'),
-        playDev: resolve(here, 'play-dev.html'),
+        gameDev: resolve(here, 'dev/game-dev.html'),
+        snapView: resolve(here, 'dev/snap-view.html'),
+        playDev: resolve(here, 'dev/play-dev.html'),
       },
     },
   },

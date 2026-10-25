@@ -19,10 +19,10 @@
 <body>
 <div id="start"><button>Tap to start</button></div>
 <script type="module">
-import { mount, requestMotionPermission } from './src/screens/game.js';
-import { C2S, S2C, CAR_STATE, EVENT, BUFF, HIT_KIND } from '../shared/protocol.js';
-import { ARENA, CARS, DEFAULT_CAR, SCALE } from '../shared/constants.js';
-import { CONFIG } from '../shared/config.js';
+import { mount, requestMotionPermission } from '../src/screens/game.js';
+import { C2S, S2C, CAR_STATE, EVENT, BUFF, HIT_KIND } from '../../shared/protocol.js';
+import { ARENA, CARS, DEFAULT_CAR, SCALE } from '../../shared/constants.js';
+import { CONFIG } from '../../shared/config.js';
 
 // --- inline fake net: same on / emit shape as net.js -------------------------
 const handlers = {};
