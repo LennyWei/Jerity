@@ -187,7 +187,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
     for (const p of room.players.values()) if (p.away) room.game.setAway(p.id, true); // still rejoining
     broadcastLobby(room);
 
-    let s = CONFIG.COUNTDOWN_S;
+    let s = room.match.round === 1 ? CONFIG.FIRST_COUNTDOWN_S : CONFIG.COUNTDOWN_S; // round 1: time to read the tips
     io.to(room.code).emit(S2C.COUNTDOWN, { seconds: s });
     const step = () => {
       s -= 1;

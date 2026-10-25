@@ -83,6 +83,7 @@ export const CONFIG = {
 
   // Rounds and scoring (FFA: last car alive wins)
   COUNTDOWN_S: 4,
+  FIRST_COUNTDOWN_S: 8,  // a match's first round: new players read the tips on the countdown screen
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
   ROUNDS_PER_MATCH: 5,   // Start plays this many rounds; the final standings rank by performance score
   VICTORY_LAP_MS: 5000,  // round decided: the arena keeps running (no damage) under the win splash, then the results
