@@ -430,10 +430,12 @@ const degBetween = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b
 }
 {
   // Steering: going right at top speed, tilt up the screen. How long until it is heading up?
-  // The velocity has to swing by sqrt(2) * top speed at OMNI_ACCEL.
   const { game, cars: [car] } = setup({ x: 20, y: 20, v: spec.maxSpeed }); // swings up through the open middle
   const ticks = run(game, [tiltTo(0, -1)], 3 * CONFIG.TICK_HZ, () => degBetween(angleOf(car), -Math.PI / 2) <= 5);
-  near('90 degree turn at top speed: time', ticks * dt, (Math.SQRT2 * spec.maxSpeed) / CONFIG.OMNI_ACCEL, 0.1, 's');
+  // The old sideways speed dies at OMNI_GRIP while the new way builds at OMNI_ACCEL; done once
+  // the travel is within 5 degrees, plus the nose catching up (about 1 / OMNI_FACE_GAIN).
+  const turnTime = spec.maxSpeed / (CONFIG.OMNI_GRIP + CONFIG.OMNI_ACCEL * Math.tan(5 * Math.PI / 180)) + 1 / CONFIG.OMNI_FACE_GAIN;
+  near('90 degree turn at top speed: time', ticks * dt, turnTime, 0.1, 's');
 }
 {
   // At top speed going right, yank the phone the other way. Omni tips over only if that is held

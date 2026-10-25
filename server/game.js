@@ -324,11 +324,16 @@ export function createGame(players) {
 
     if (want > 0) {
       b.setLinearDamping(0);
-      const k = (maxSpeed * want) / Math.hypot(wx, wy);
-      const dvx = wx * k - v.x, dvy = wy * k - v.y, dv = Math.hypot(dvx, dvy);
-      const cap = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
-      const s = dv > cap ? cap / dv : 1;
-      b.applyLinearImpulse(Vec2(dvx * s * mass, dvy * s * mass), b.getWorldCenter());
+      // Split the velocity along where you tilt and across it. Along: speed up (or brake) toward
+      // the target speed at OMNI_ACCEL, so it still has weight. Across: sliding the old way is
+      // killed at OMNI_GRIP, much faster, so turns respond quickly instead of gliding.
+      const ux = wx / Math.hypot(wx, wy), uy = wy / Math.hypot(wx, wy);
+      const along = v.x * ux + v.y * uy;
+      const sideX = v.x - along * ux, sideY = v.y - along * uy, side = Math.hypot(sideX, sideY);
+      const accel = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
+      const dAlong = Math.max(-accel, Math.min(accel, maxSpeed * want - along));
+      const dSide = side > 0 ? Math.min(side, CONFIG.OMNI_GRIP * dt) / side : 0;
+      b.applyLinearImpulse(Vec2((ux * dAlong - sideX * dSide) * mass, (uy * dAlong - sideY * dSide) * mass), b.getWorldCenter());
     } else {
       b.setLinearDamping(CONFIG.OMNI_COAST_DAMPING); // no tilt (or knocked back): roll to a stop
     }

@@ -13,9 +13,10 @@ export const CONFIG = {
   // Driving mode. 'omni': tilt the phone the way you want to go on screen (like a marble on a
   // tray); the car's nose turns to face where it is going. 'car': roll steers, tip drives.
   DRIVE_MODE: 'omni',
-  OMNI_ACCEL: 20,         // m/s^2: how fast the car's velocity swings to where you tilt: acceleration and grip in turns
+  OMNI_ACCEL: 20,         // m/s^2: speeding up (or braking) along where you tilt: the weight
+  OMNI_GRIP: 45,          // m/s^2: sliding across where you tilt dies this fast: how quickly turns respond
   OMNI_COAST_DAMPING: 3.5, // friction with the phone level: rolls to a stop instead of gliding (half speed every 0.2 s)
-  OMNI_FACE_GAIN: 8,      // how quickly the nose turns to face the direction of travel
+  OMNI_FACE_GAIN: 14,     // how quickly the nose turns to face the direction of travel
   OMNI_FLIP_ANGLE_DEG: 60, // omni tip-over: yanking at least this far off your direction of travel...
   OMNI_FLIP_SPEED_FRAC: 0.7, // ...while above this fraction of top speed (swinging bleeds speed, so lower than FLIP_SPEED_FRAC)
   OMNI_TILT_DEG: 18,      // phone tilt (from the calibrated grip) for full speed in that direction
@@ -50,7 +51,7 @@ export const CONFIG = {
   // throttle and grip for a moment, so they separate instead of grinding or sliding along each other.
   KNOCKBACK_SPEED: 5,         // m/s apart for each car after a side or rear hit
   HEADON_KNOCKBACK_SPEED: 8,  // m/s apart after a head-on: far enough to steer past each other after the stun
-  KNOCKBACK_MS: 900,          // no control at all (throttle, grip, steering) for this long after a knockback
+  KNOCKBACK_MS: 300,          // no control at all (throttle, grip, steering) for this long after a knockback
   KNOCKBACK_SPIN: 1.3,        // rad/s spin from a knockback; dies out at ANGULAR_DAMPING (about 25 deg in all)
 
   // Tip-over (greedy full speed + full steering)
