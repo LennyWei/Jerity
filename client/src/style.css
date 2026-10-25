@@ -20,6 +20,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 body { overscroll-behavior: none; }
 #app { min-height: 100%; }
 button, input { font: inherit; color: inherit; }
+[hidden] { display: none !important; } /* layout classes like .row must not override hidden */
 button { cursor: pointer; touch-action: manipulation; }
 
 .screen { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; align-items: center;
@@ -93,3 +94,18 @@ h2 { margin: 0; font-size: 20px; }
   background: var(--bad); color: #fff; font-weight: 800; padding: 8px 14px; border-radius: 999px; font-size: 14px; }
 .banner:empty { display: none; }
 .banner.info { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); }
+
+/* Home: bot stepper and open-rooms list */
+.row.bots { justify-content: space-between; }
+.row.bots > * { flex: none; }
+.stepper { display: flex; align-items: center; gap: 10px; }
+.stepper .btn.small { width: 40px; height: 40px; padding: 0; font-size: 20px; }
+.stepper .count { min-width: 1.5em; text-align: center; font-weight: 800; font-size: 18px; }
+.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.room { display: flex; align-items: center; gap: 12px; background: var(--panel); border-radius: 12px; padding: 10px 12px; }
+.room.closed { opacity: 0.55; }
+.room-main { flex: 1; min-width: 0; }
+.room-title { font-weight: 700; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-tag { font-size: 11px; font-weight: 800; letter-spacing: 0.12em; color: var(--accent); background: rgba(255,210,63,0.12); padding: 2px 6px; border-radius: 6px; }
+.room .muted { font-size: 13px; }
+.tag.bot { background: rgba(77,208,225,0.16); color: #4dd0e1; }

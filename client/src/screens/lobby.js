@@ -1,13 +1,13 @@
 // client/src/screens/lobby.js
 // Room code + QR to /join/CODE, players in their colors, ready toggle, Start (host only,
-// enabled at MIN_PLAYERS), Recalibrate, Leave. Person 4 owns this file.
+// enabled at MIN_PLAYERS; bots count), host bot controls, Recalibrate, Leave. Person 4 owns this file.
 //
 //   mount(root, { net, playerId, lobby, onLeave }) -> unmount
 // The router switches to the game screen on the countdown; this screen only shows the room.
 
 import { h, colorOf, joinUrl, renderQr } from '../ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
-import { MIN_PLAYERS } from '../../../shared/constants.js';
+import { MIN_PLAYERS, MAX_PLAYERS } from '../../../shared/constants.js';
 import { calibrate, requestMotionPermission } from './game.js';
 
 export function mount(root, { net, playerId, lobby, onLeave }) {
@@ -28,6 +28,17 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
     if (res?.error) { err.textContent = res.error; start.disabled = false; }
   } }, 'Start');
 
+  // Host: fill empty seats with bots, or take them out again.
+  const botReq = async (event) => {
+    addBot.disabled = removeBot.disabled = true;
+    const res = await net.request(event, {});
+    if (res?.error) err.textContent = res.error;
+    render();
+  };
+  const addBot = h('button.btn.small', { onclick: () => botReq(C2S.ADD_BOT) }, '+ Add bot');
+  const removeBot = h('button.btn.small.ghost', { onclick: () => botReq(C2S.REMOVE_BOT) }, '− Remove bot');
+  const botRow = h('div.row', {}, addBot, removeBot);
+
   const recal = h('button.btn.ghost', { onclick: async () => {
     await requestMotionPermission(); // from this tap: iOS needs it
     recal.disabled = true;
@@ -47,17 +58,21 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
       h('span.swatch', { style: { background: colorOf(p, i) } }),
       h('span.name', {}, p.name, p.id === playerId ? ' (you)' : ''),
       p.id === state.hostId ? h('span.tag.host', {}, 'HOST') : null,
-      h(`span.tag${p.ready ? '.ready' : ''}`, {}, p.ready ? 'READY' : 'not ready'),
+      p.bot ? h('span.tag.bot', {}, 'BOT') : h(`span.tag${p.ready ? '.ready' : ''}`, {}, p.ready ? 'READY' : 'not ready'),
     )));
     ready.textContent = me?.ready ? 'Ready ✓ (tap to undo)' : 'I’m ready';
     ready.className = `btn ${me?.ready ? 'good' : ''}`;
 
     const inLobby = state.state === ROOM_STATE.LOBBY;
+    const botCount = state.players.filter((p) => p.bot).length;
+    botRow.hidden = !host;
+    addBot.disabled = !inLobby || n >= MAX_PLAYERS;
+    removeBot.disabled = !inLobby || botCount === 0;
     start.hidden = !host;
     start.disabled = !inLobby || n < MIN_PLAYERS;
     start.textContent = n < MIN_PLAYERS ? `Start (need ${MIN_PLAYERS - n} more)` : 'Start';
     note.textContent = !inLobby ? 'A round is finishing. The lobby opens in a moment.'
-      : host ? (n < MIN_PLAYERS ? `Waiting for players: ${n}/${MIN_PLAYERS}` : 'Everyone in? Tap Start.')
+      : host ? (n < MIN_PLAYERS ? `Waiting for players: ${n}/${MIN_PLAYERS} (or add bots)` : 'Everyone in? Tap Start.')
         : 'Waiting for the host to start…';
   }
 
@@ -73,7 +88,7 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
         h('div.muted', {}, 'Scan to join, or enter the code')),
       h('div.stack', { style: { width: '100%' } },
         h('div.card', {}, list),
-        ready, start, recal, note, err)));
+        ready, start, botRow, recal, note, err)));
   root.append(el);
   renderQr(qr, joinUrl(state.code));
   render();

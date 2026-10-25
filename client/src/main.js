@@ -40,7 +40,7 @@ function goHome(code = '', error = '') {
   if (session.code) net.emit(C2S.LEAVE, {});
   Object.assign(session, { playerId: null, code: null, lobby: null });
   history.replaceState(null, '', (code ? `/join/${code}` : '/') + keepQuery());
-  show('home', (root) => home.mount(root, { code, error, onCreate, onJoin }));
+  show('home', (root) => home.mount(root, { net, code, error, onCreate, onJoin }));
 }
 
 function showLobby() {
