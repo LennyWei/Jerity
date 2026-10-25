@@ -36,11 +36,7 @@ export function resetCorruption() {
   apply();
 }
 
-function apply() {
-  const c = corruption();
-  document.documentElement.style.setProperty('--corrupt', c.toFixed(3));
-  document.documentElement.dataset.verityStage = String(stageOf(c));
-}
+
 apply();
 
 // Drop recordings into client/public/audio/jerity. Missing menu clips stay silent.
