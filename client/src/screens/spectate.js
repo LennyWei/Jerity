@@ -10,6 +10,7 @@ import { CONFIG } from '../../../shared/config.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
+import { connectJerity } from '../jerity-round.js';
 
 export function mount(root, { net, code, onError }) {
   const canvas = h('canvas');
@@ -26,6 +27,7 @@ export function mount(root, { net, code, onError }) {
   const helper = h('div.spectate-verity');
   el.append(helper);
   const verity = mountVerity(helper, { lines: LINES.spectate, quiet: true });
+  const disconnectJerity = connectJerity({ net, face: verity });
   const nameOf = (id) => lobby?.players.find((p) => p.id === id)?.name || 'someone';
   const interp = createInterp();
   let lobby = null, ended = null, alive = true, lastCount = 0;
@@ -79,6 +81,7 @@ export function mount(root, { net, code, onError }) {
     renderer.addEvents(events, view);
     verity.react(events, { me: null, nameOf });
     renderer.draw(view, now);
+    verity.watch(view, renderer.project, now);
   };
   raf = requestAnimationFrame(frame);
   showStatus();
@@ -89,6 +92,7 @@ export function mount(root, { net, code, onError }) {
     offs.forEach((f) => f());
     offStatus();
     renderer.destroy();
+    disconnectJerity();
     verity.destroy();
     el.remove();
   };

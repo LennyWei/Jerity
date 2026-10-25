@@ -14,6 +14,7 @@ import { createGame } from './game.js';
 import { roundScore } from './mechanics.js';
 import { botInput } from './bots.js';
 import { VerityPipeline } from '../verity/verity-pipeline.js';
+import { createJerityRound } from './jerity-round.js';
 // Server-only details, not tuning.
 const TEST_CODE = 'TEST';    // always running, matches loop; join it to get a car immediately
 const TEST_BOTS = 3;
@@ -22,11 +23,10 @@ const MAX_CATCHUP_TICKS = 5; // after a stall (GC, laptop sleep), drop time inst
 const STEP_MS = 1000 / CONFIG.TICK_HZ;
 const NO_INPUT = { seq: 0, tilt: 0, accel: false, taps: 0 };
 
-export function createRooms(io) {
+export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), jerityLimits } = {}) {
   const rooms = new Map();
   let botSeq = 1;
   const verityPipelines = new Map();
-  const VERITY_COOLDOWN_MS = 7000;
 
   // ---------------------------------------------------------------------------
   // Rooms and players
@@ -50,9 +50,7 @@ export function createRooms(io) {
       game: null,         // set from countdown to the end of the results screen
       match: null,        // { round, totals: id -> match totals } from Start to the final standings
       timers: [],
-      verityBusy: false,
-      verityPhase: 'idle',
-      verityArguments: new Map(),
+      jerity: null,
     };
     rooms.set(code, room);
     return room;
@@ -91,6 +89,7 @@ export function createRooms(io) {
       hostId: room.hostId,
       map: room.map,
       state: room.state,
+      jerity: room.jerity?.state() || null,
       ...(room.match ? { round: room.match.round, rounds: CONFIG.ROUNDS_PER_MATCH } : {}),
       players: [...room.players.values()].map(p => ({
         id: p.id, name: p.name, color: p.color, ready: p.ready, ...(p.isBot ? { bot: true } : {}),
@@ -124,6 +123,7 @@ export function createRooms(io) {
   }
 
   function clearTimers(room) {
+    room.jerity?.cancel();
     room.timers.forEach(clearTimeout);
     room.timers = [];
   }
@@ -140,6 +140,7 @@ export function createRooms(io) {
     if (humans(room).length === 0 && room.code !== TEST_CODE) {
       clearTimers(room);
       rooms.delete(room.code);
+      verityPipelines.delete(room.code);
       return;
     }
     broadcastLobby(room);
@@ -151,6 +152,7 @@ export function createRooms(io) {
 
   function startMatch(room) {
     room.match = { round: 0, totals: new Map() };
+    verityPipelines.set(room.code, pipelineFactory());
     startCountdown(room);
   }
 
@@ -165,10 +167,14 @@ export function createRooms(io) {
     room.state = ROOM_STATE.COUNTDOWN;
     for (const p of room.players.values()) p.input = { ...NO_INPUT };
     room.game = createGame([...room.players.values()], room.map);
-    verityPipelines.set(room.code, new VerityPipeline());
-    room.verityBusy = false;
-    room.verityPhase = 'idle';
-    room.verityArguments.clear();
+    const game = room.game;
+    room.jerity = createJerityRound({
+      game, pipeline: verityPipelines.get(room.code),
+      ...(jerityLimits ? { limits: jerityLimits } : {}),
+      players: () => [...room.players.values()],
+      broadcast: (event, payload) => io.to(room.code).emit(event, payload),
+      isCurrent: () => rooms.get(room.code) === room && room.game === game && room.state === ROOM_STATE.PLAYING,
+    });
     for (const p of room.players.values()) if (p.away) room.game.setAway(p.id, true); // still rejoining
     broadcastLobby(room);
 
@@ -181,6 +187,7 @@ export function createRooms(io) {
         later(room, step, 1000);
       } else {
         room.state = ROOM_STATE.PLAYING;
+        void room.jerity.start();
         broadcastLobby(room);
       }
     };
@@ -245,6 +252,7 @@ export function createRooms(io) {
     if (room.code === TEST_CODE) return startMatch(room);
         room.state = ROOM_STATE.LOBBY;
     room.game = null;
+    room.jerity = null;
     verityPipelines.delete(room.code);
     room.match = null;
     for (const p of room.players.values()) if (!p.isBot) p.ready = false;
@@ -252,7 +260,7 @@ export function createRooms(io) {
   }
 
   function tickRoom(room, dt) {
-    if (room.state !== ROOM_STATE.PLAYING) return;
+    if (room.state !== ROOM_STATE.PLAYING || room.jerity?.busy) return;
     room.game.step(takeInputs(room), dt);
     if (room.game.over()) endRound(room);
   }
@@ -283,7 +291,7 @@ export function createRooms(io) {
   let last = performance.now();
   let acc = 0;
   let snapAcc = 0;
-  setInterval(() => {
+  const tickTimer = setInterval(() => {
     const t = performance.now();
     acc = Math.min(acc + t - last, STEP_MS * MAX_CATCHUP_TICKS);
     last = t;
@@ -396,109 +404,12 @@ export function createRooms(io) {
       ack({ ok: true });
       startMatch(room);
     });
-        // Player sends an argument to Jerity
-    on('verityArgument', async (msg, ack) => {
+    on(C2S.JERITY_AUDIO, (msg, ack) => {
       const room = myRoom();
-      const p = room?.players.get(pid());
-
-      if (!room || !p || p.isBot || p.away ||
-          room.state !== ROOM_STATE.PLAYING || !room.game) {
-        return ack({ error: 'Join an active game first' });
-      }
-
-      const text = typeof msg.text === 'string'
-        ? msg.text.trim().slice(0, 500)
-        : '';
-
-      if (!text) {
-        return ack({ error: 'Enter an argument' });
-      }
-
-      if (room.verityBusy) {
-        return ack({ error: 'Jerity is already deciding' });
-      }
-
-      if (Date.now() - room.lastVerityAt < VERITY_COOLDOWN_MS) {
-        return ack({ error: 'Wait before asking Jerity again' });
-      }
-
-      const game = room.game;
-      const pipeline = verityPipelines.get(room.code);
-
-      if (!pipeline) {
-        return ack({ error: 'Jerity is not ready' });
-      }
-
-      room.verityBusy = true;
-      room.lastVerityAt = Date.now();
-
-      ack({ ok: true });
-
-      try {
-        const players = Object.fromEntries(
-          [...game.cars].map(([id, car]) => [
-            id,
-            {
-              hp: car.hp,
-              maxHp: car.maxHp,
-              name: room.players.get(id)?.name || id,
-            }
-          ])
-        );
-
-        const result = await pipeline.runCycleSimulated(
-          { players },
-          [{ playerId: p.id, text }],
-          { skipTts: true }
-        );
-
-        // Make sure the same round is still running
-        if (room.game !== game ||
-            room.state !== ROOM_STATE.PLAYING) {
-          return;
-        }
-
-        const applied = [];
-
-        for (const event of result.events || []) {
-          if (!event || event.action === 'none') continue;
-
-          const targetValue = event.target;
-
-          const targets = Array.isArray(targetValue)
-            ? targetValue
-            : [targetValue];
-
-          const action = {
-            action: event.action,
-            target: targets[0],
-            target2: targets[1],
-          };
-
-          // Auto-kill needs a trusted persuasion score
-          if (action.action === 'auto_kill') continue;
-
-          if (game.applyJerityAction(action)) {
-            applied.push(event);
-          }
-        }
-
-        io.to(room.code).emit('verityRuling', {
-          speakerId: p.id,
-          events: applied,
-          voiceLines: result.voiceLines || [],
-        });
-
-      } catch (err) {
-        console.error(`[${room.code}] Jerity failed:`, err);
-
-        socket.emit('verityError', {
-          message: 'Jerity could not process that argument',
-        });
-
-      } finally {
-        room.verityBusy = false;
-      }
+      ack(room?.jerity?.submit(pid(), msg) || { error: 'No active listening window.' });
+    });
+    on(C2S.JERITY_PLAYED, (msg) => {
+      myRoom()?.jerity?.played(pid(), msg);
     });
     on(C2S.INPUT, (raw) => {
       const p = myRoom()?.players.get(pid());
@@ -579,5 +490,15 @@ export function createRooms(io) {
     startMatch(test);
   }
 
-  return { attach, codes: () => [...rooms.keys()] };
+  return {
+    attach, codes: () => [...rooms.keys()],
+    close() {
+      clearInterval(tickTimer);
+      for (const room of rooms.values()) {
+        clearTimers(room);
+        for (const p of room.players.values()) clearTimeout(p.dropTimer);
+      }
+      rooms.clear(); verityPipelines.clear();
+    },
+  };
 }

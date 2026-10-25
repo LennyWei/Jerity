@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
 import { CONFIG } from '../shared/config.js';
+import { JERITY } from '../shared/jerity.js';
 import { createRooms } from './rooms.js';
 
 const PORT = process.env.PORT || 3000;
@@ -20,6 +21,7 @@ const DIST = path.join(__dirname, '../client/dist');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
+  maxHttpBufferSize: Math.ceil(JERITY.MAX_AUDIO_BYTES * 4 / 3) + 4096,
   cors: { origin: '*' }, // pages served elsewhere (Vite, Vercel) can connect too
   // Notice a silent phone within about DISCONNECT_GRACE_MS (Socket.IO's default is 45 s), so its
   // car turns into a ghost promptly instead of sitting there taking hits.

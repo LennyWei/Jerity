@@ -1,112 +1,37 @@
-// client/src/verity-ui.js
-// Verity, the helper on the menu and lobby screens. Analog horror: a cheerful assistant on the
-// surface who turns curt, then rude, then ominous the longer you stay and the more you come back.
-// Person 4 owns this file.
-//
-//   const v = mountVerity(el, { lines: LINES.home, name: () => 'Sam' });  // face + speech bubble
-//   v.say('Great choice!');   v.destroy();
-//   bumpCorruption(0.1);      // e.g. after a round
-//
-// Corruption (0..1) lives on <html> as --corrupt and data-verity-stage (0..3); the CSS in
-// style.css turns it into drained color, heavier scanlines, tears and a red tint.
-
+// Jerity's persistent face. Dialogue is audio; live status stays accessible without speech boxes.
 import { store } from './ui.js';
+import './jerity.css';
+import { CAR_STATE } from '../../shared/protocol.js';
+import { playVoice, stopVoice, soundMuted, setSoundMuted, unlockAudio,
+  microphoneEnabled, enableMicrophone, disableMicrophone, onMicrophoneChange } from './jerity-audio.js';
 
-const VISITS_KEY = 'jerity-visits';
-const EXTRA_KEY = 'jerity-corruption';
-const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
-const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-// Each page load counts as a visit; coming back starts him further along.
-const visits = (Number(store.get(VISITS_KEY, '0')) || 0) + 1;
-store.set(VISITS_KEY, String(visits));
-let extra = Number(store.get(EXTRA_KEY, '0')) || 0;
-let menuSeconds = 0;
-
-export function corruption() {
-  return Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / (MINUTES_TO_FULL * 60));
+const visits = (Number(store.get('jerity-visits', '0')) || 0) + 1;
+store.set('jerity-visits', String(visits));
+let extra = Number(store.get('jerity-corruption', '0')) || 0, menuSeconds = 0;
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+export const corruption = () => Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / 360);
+export const stageOf = c => c < 0.25 ? 0 : c < 0.5 ? 1 : c < 0.75 ? 2 : 3;
+function apply() {
+  document.documentElement.style.setProperty('--corrupt', corruption().toFixed(3));
+  document.documentElement.dataset.verityStage = String(stageOf(corruption()));
 }
-export const stageOf = (c) => (c < 0.25 ? 0 : c < 0.5 ? 1 : c < 0.75 ? 2 : 3);
-
-/** Something happened that wears him down (a finished round, leaving a room). */
 export function bumpCorruption(amount) {
   extra = Math.min(1, extra + amount);
-  store.set(EXTRA_KEY, extra.toFixed(3));
+  store.set('jerity-corruption', extra.toFixed(3));
   apply();
-}
-
-function apply() {
-  const c = corruption();
-  document.documentElement.style.setProperty('--corrupt', c.toFixed(3));
-  document.documentElement.dataset.verityStage = String(stageOf(c));
 }
 apply();
 
-// Lines by stage. {name} is the player's name (or "friend").
-export const LINES = {
-  home: [
-    ['Hi there! I’m Verity, your game helper :)', 'Type your name and I’ll take care of everything!',
-      'Make a room, or join your friends. I’ll be right here!', 'Tilt your phone to drive. Isn’t that fun?'],
-    ['Hello again, {name}.', 'Your name, please. Then a room.', 'Take your time. I have plenty of it.',
-      'You came back. Interesting.'],
-    ['You again.', 'Hurry up. They are waiting.', 'That name doesn’t suit you, {name}.',
-      'I don’t remember inviting you.'],
-    ['I remember you, {name}.', 'Nobody leaves the arena.', 'Why did you come back.', 'Stop looking at me like that.'],
-  ],
-  lobby: [
-    ['Your room is ready! Share the code with your friends :)', 'Scan the QR code to join. Easy!',
-      'Everyone press Ready, then the host taps Start!', 'Bots can fill empty seats. They’re very polite.'],
-    ['Still waiting? I can wait.', 'Share the code. Or don’t.', 'The bots don’t mind waiting. Neither do I.'],
-    ['Is this everyone? How sad.', 'Press Start. I’m getting bored.', 'One of you is going to lose. I already know who.'],
-    ['I can see all of you.', 'Start the round, {name}.', 'The arena is hungry.', 'I have been watching this room.'],
-  ],
-  match: [
-    ['Drive safe! Bump the others, not the walls :)', 'Ram their side for big points!', 'You’re doing great, {name}!'],
-    ['Faster.', 'Is that all?', 'I’m keeping score. Of everything.'],
-    ['Pathetic driving.', 'Hit someone already.', 'They can all see you, {name}.'],
-    ['It ends here.', 'Nobody is coming to help you.', 'Keep driving. I’m right behind you.'],
-  ],
-  spectate: [
-    ['Welcome to the arena! Scan the code to play :)', 'Who will be the last car standing?', 'Cheer for your friends!'],
-    ['Watch closely.', 'Someone is going to lose.', 'I see everything from up here.'],
-    ['Look at them. Fighting over nothing.', 'You are watching. So am I.', 'Join them. There’s room.'],
-    ['None of them are leaving.', 'You could stop this. You won’t.', 'Keep watching.'],
-  ],
-  results: [
-    ['What a match! Want to play again?', 'Great game, everyone :)'],
-    ['Again?', 'You’ll play again. You always do.'],
-    ['Go again. I’m not finished with you.', 'Again.'],
-    ['Again.', 'There is no leaving.'],
-  ],
+// Drop recordings into client/public/audio/jerity. Missing menu clips stay silent.
+export const LINES = { home: 'home', lobby: 'lobby', match: 'match', spectate: 'spectate', results: 'results' };
+export const MENU_VOICES = {
+  home: ['/audio/jerity/home-1.mp3', '/audio/jerity/home-2.mp3'],
+  lobby: ['/audio/jerity/lobby-1.mp3', '/audio/jerity/lobby-2.mp3'],
 };
-
-// One-off reactions, by stage. {victim} and {winner} are names.
-export const REACT = {
-  myHit: [['Nice hit!', 'Ooh, right in the side!', 'Great bump! :)'], ['Adequate.', 'Again.', 'Harder.'],
-    ['Again. Make it hurt.', 'Is that your best?', 'More.'], ['Yes. Break them.', 'Good. Good.', 'They felt that.']],
-  gotHit: [['Ouch! Shake it off!', 'Oopsie! You’re okay!', 'Watch out!'], ['That looked painful.', 'Pay attention.', 'Ow.'],
-    ['You deserved that.', 'Pathetic.', 'Stop getting hit.'], ['Does it hurt, {name}?', 'I enjoyed that.', 'Let them.']],
-  flip: [['Uh oh! Tap to flip back!', 'Whoops! Tap tap tap!'], ['Tap. Now.', 'Flipped again.'],
-    ['Get up.', 'Embarrassing.'], ['Stay down.', 'Maybe stay there.']],
-  headon: [['Bonk! Head-on!', 'Seeing stars? :)'], ['That was stupid.', 'Brilliant. Truly.'],
-    ['Idiots.', 'Both of you. Idiots.'], ['Your skulls rang like bells.', 'I heard that.']],
-  kill: [['You knocked them out! Amazing!', 'KO! You’re a natural!'], ['One less.', 'Fine work.'],
-    ['Who’s next?', 'More.'], ['That’s one.', 'I’ll remember {victim}.']],
-  killed: [['Oh no! You can watch the rest :)', 'Good game! Better luck next time!'], ['You lost.', 'Sit down.'],
-    ['Useless.', 'I expected that.'], ['You belong to me now, {name}.', 'There you are.']],
-  otherKill: [['{victim} is out! Wow!', 'Bye bye, {victim}!'], ['{victim} is gone.', 'So long, {victim}.'],
-    ['{victim} won’t be missed.', 'Nobody liked {victim}.'], ['{victim} is mine now.', 'I have {victim}.']],
-  win: [['You won! I’m so proud of you!'], ['You won. This time.'], ['Winning changes nothing.'], ['You won. Now you can never leave.']],
-  lose: [['{winner} wins! Good try :)'], ['{winner} wins. You didn’t.'], ['You lost to {winner}. Typical.'], ['{winner} won. You are still here.']],
-  draw: [['A draw! Everyone’s a winner :)'], ['Nobody won.'], ['All of you failed.'], ['No winners. Only me.']],
-};
-
-// Split-second wrong lines that flash before the friendly one comes back (stage 1+).
-const WHISPERS = ['HELP ME', 'he is not helping you', 'DON’T LOOK AWAY', 'it was never a game', 'I am still here'];
-
-const FACE = `
-<svg viewBox="0 0 100 100" aria-hidden="true">
-  <circle class="v-head" cx="50" cy="50" r="44"/>
+const greetings = { home: 0, lobby: 0 };
+const FACE = `<svg viewBox="0 0 100 100" aria-hidden="true">
+  <circle class="v-halo" cx="50" cy="50" r="48"/>
+  <circle class="v-head" cx="50" cy="50" r="43"/>
   <g class="v-eyes">
     <ellipse class="v-eye" cx="35" cy="42" rx="7" ry="9"/>
     <ellipse class="v-eye" cx="65" cy="42" rx="7" ry="9"/>
@@ -116,134 +41,135 @@ const FACE = `
   <path class="v-mouth" d="M30 64 Q50 80 70 64"/>
 </svg>`;
 
-/**
- * Face + speech bubble in `el`. lines: one array per stage. name(): the player's name.
- * quiet: chat less on his own (in a match he mostly reacts).
- * Returns { say(text), react(events, { me, nameOf }), verdict({ won, winner }), destroy() }.
- */
-export function mountVerity(el, { lines, name = () => '', quiet = false }) {
+export function mountVerity(el, { lines = 'match', quiet = false, microphone = false } = {}) {
   el.classList.add('verity');
-  el.innerHTML = `<div class="v-face">${FACE}</div><div class="v-bubble" role="status" aria-live="polite"><span class="v-text"></span></div>`;
-  const textEl = el.querySelector('.v-text');
-  const mouth = el.querySelector('.v-mouth');
-  const pupils = [...el.querySelectorAll('.v-pupil')];
-  let alive = true, typing = 0, lastLine = '', lineTimer = 0, glitchTimer = 0, reactedAt = 0;
-  const idleMs = quiet ? 14000 : 6500;
-
-  const fill = (t, vars = {}) => Object.entries({ name: name() || 'friend', ...vars })
-    .reduce((out, [k, v]) => out.replaceAll(`{${k}}`, v || 'someone'), t);
-
-  // Typewriter, so he "speaks"
-  function say(text, speed = 28, vars) {
-    clearInterval(typing);
-    const full = fill(text, vars);
-    let i = 0;
-    textEl.textContent = '';
-    if (reduceMotion) { textEl.textContent = full; return; }
-    typing = setInterval(() => {
-      textEl.textContent = full.slice(0, ++i);
-      if (i >= full.length) clearInterval(typing);
-    }, speed);
-  }
-
-  function nextLine() {
-    if (!alive) return;
+  el.innerHTML = `<div class="v-face" role="img" aria-label="Jerity">${FACE}</div>
+    <div class="v-controls">
+      <button class="v-sound" type="button" aria-label="Mute Jerity" title="Mute Jerity"></button>
+      ${microphone ? '<button class="v-mic" type="button"></button>' : ''}
+    </div>
+    <span class="v-status" role="status" aria-live="polite"></span>`;
+  const face = el.querySelector('.v-face'), mouth = el.querySelector('.v-mouth');
+  const pupils = [...el.querySelectorAll('.v-pupil')], status = el.querySelector('.v-status');
+  const sound = el.querySelector('.v-sound'), mic = el.querySelector('.v-mic');
+  let alive = true, speaking = false, phase = 'idle', mood = '', focusId = null;
+  let watchedId = null, switchAt = 0, pulseTimer = 0, greetingTimer = 0, micBusy = false;
+  function expression() {
     const stage = stageOf(corruption());
-    const pool = lines[stage] || lines[0];
-    let line = pool[Math.floor(Math.random() * pool.length)];
-    if (pool.length > 1 && line === lastLine) line = pool[(pool.indexOf(line) + 1) % pool.length];
-    lastLine = line;
-    // Now and then (more often as he turns), a wrong line flashes first.
-    if (stage >= 1 && !reduceMotion && Math.random() < 0.15 + stage * 0.1) {
-      textEl.textContent = WHISPERS[Math.floor(Math.random() * WHISPERS.length)];
-      el.classList.add('v-whisper');
-      setTimeout(() => { el.classList.remove('v-whisper'); if (alive) say(line, 32 + stage * 14); }, 160);
-    } else {
-      say(line, 28 + stage * 14);
-    }
-    // The smile flattens, then grows too wide.
-    mouth.setAttribute('d', ['M30 64 Q50 80 70 64', 'M32 66 Q50 72 68 66', 'M32 68 L68 68', 'M22 62 Q50 92 78 62'][stage]);
-    lineTimer = setTimeout(nextLine, idleMs + Math.random() * 3000 - stage * 1200);
+    const sinister = ['vengeful', 'menacing', 'chaotic'].includes(mood);
+    mouth.setAttribute('d', speaking ? 'M34 65 Q50 88 66 65 Q50 73 34 65'
+      : phase === 'listening' ? 'M41 69 Q50 74 59 69'
+      : sinister ? 'M22 62 Q50 92 78 62'
+      : ['M30 64 Q50 80 70 64', 'M32 66 Q50 72 68 66', 'M32 68 L68 68', 'M22 62 Q50 92 78 62'][stage]);
   }
-
-  const pickLine = (pools) => {
-    const pool = pools[stageOf(corruption())] || pools[0];
-    return pool[Math.floor(Math.random() * pool.length)];
-  };
-  function sayNow(pools, vars) {
-    clearTimeout(lineTimer);
-    say(pickLine(pools), 24 + stageOf(corruption()) * 10, vars);
-    lineTimer = setTimeout(nextLine, idleMs + 4000);
-  }
-
-  /**
-   * In a match: comment on the most interesting event in this batch. Your own KO beats your kill,
-   * beats a flip, a head-on, getting hit, landing a hit; then other people's KOs.
-   * A short cooldown keeps him from chattering, except for KOs.
-   */
-  function react(events, { me, nameOf = () => '' } = {}) {
-    if (!events?.length || !alive) return;
-    let best = null, rank = 0;
-    const offer = (r, pools, vars) => { if (r > rank) { rank = r; best = [pools, vars]; } };
-    for (const e of events) {
-      if (e.type === 'kill' && e.victim === me) offer(9, REACT.killed);
-      else if (e.type === 'kill' && e.attacker === me) offer(8, REACT.kill, { victim: nameOf(e.victim) });
-      else if (e.type === 'flip' && e.id === me) offer(7, REACT.flip);
-      else if (e.type === 'headon' && (e.a === me || e.b === me)) offer(6, REACT.headon);
-      else if (e.type === 'hit' && e.victim === me) offer(5, REACT.gotHit);
-      else if (e.type === 'hit' && e.attacker === me) offer(4, REACT.myHit);
-      else if (e.type === 'kill') offer(3, REACT.otherKill, { victim: nameOf(e.victim) });
-    }
-    if (!best) return;
-    const now = performance.now();
-    if (rank < 8 && now - reactedAt < 2600) return;
-    reactedAt = now;
-    sayNow(...best);
-  }
-
-  /** Results: one line about how it went. */
-  function verdict({ won, winner }) {
-    sayNow(won ? REACT.win : winner ? REACT.lose : REACT.draw, { winner });
-  }
-
-  // Eyes follow your finger / mouse once he's past cheerful.
-  const look = (e) => {
-    if (stageOf(corruption()) < 1) { pupils.forEach((p, k) => { p.setAttribute('cx', k ? 65 : 35); p.setAttribute('cy', 42); }); return; }
-    const r = el.querySelector('.v-face').getBoundingClientRect();
-    const dx = (e.clientX - (r.left + r.width / 2)) / innerWidth, dy = (e.clientY - (r.top + r.height / 2)) / innerHeight;
-    pupils.forEach((p, k) => {
-      p.setAttribute('cx', (k ? 65 : 35) + Math.max(-1, Math.min(1, dx * 3)) * 3);
-      p.setAttribute('cy', 42 + Math.max(-1, Math.min(1, dy * 3)) * 4);
-    });
-  };
-  addEventListener('pointermove', look);
-  addEventListener('pointerdown', look);
-
-  // Time on these screens wears him down; glitches get more frequent as he does.
-  const clock = setInterval(() => { menuSeconds += 1; apply(); }, 1000);
-  function glitch() {
+  function onSpeaking(value) {
     if (!alive) return;
-    const c = corruption();
-    if (!reduceMotion && c > 0.15) {
-      document.documentElement.classList.add('v-glitch');
-      setTimeout(() => document.documentElement.classList.remove('v-glitch'), 90 + c * 160);
-    }
-    glitchTimer = setTimeout(glitch, (9000 - c * 7000) * (0.5 + Math.random()));
+    speaking = value;
+    el.classList.toggle('v-speaking', value);
+    expression();
   }
+  function refreshSound() {
+    sound.textContent = soundMuted() ? '♪ ×' : '♪';
+    sound.setAttribute('aria-label', soundMuted() ? 'Unmute Jerity' : 'Mute Jerity');
+    sound.title = sound.getAttribute('aria-label');
+    sound.setAttribute('aria-pressed', String(soundMuted()));
+  }
+  sound.onclick = () => { unlockAudio(); setSoundMuted(!soundMuted()); refreshSound(); };
+  refreshSound();
+  function refreshMic() {
+    if (!mic || !alive) return;
+    const enabled = microphoneEnabled();
+    mic.textContent = enabled ? 'Mic on' : 'Enable mic';
+    mic.setAttribute('aria-pressed', String(enabled));
+    mic.title = enabled ? 'Disable microphone' : 'Let Jerity listen for 4.5 seconds after each countdown';
+  }
+  function microphoneError(message) {
+    if (!alive) return;
+    if (mic) { mic.textContent = 'Mic unavailable'; mic.title = message; }
+    status.textContent = message;
+  }
+  if (mic) mic.onclick = async () => {
+    if (micBusy) return;
+    if (microphoneEnabled()) { disableMicrophone(); return; }
+    micBusy = true; mic.disabled = true;
+    try { await enableMicrophone(); refreshMic(); }
+    catch (error) { microphoneError(error.message); }
+    finally { micBusy = false; mic.disabled = false; }
+  };
+  const offMic = onMicrophoneChange(refreshMic);
+  refreshMic();
 
-  nextLine();
-  glitchTimer = setTimeout(glitch, 4000);
+  async function greet() {
+    if (!alive || quiet || !MENU_VOICES[lines] || phase !== 'idle') return;
+    const urls = MENU_VOICES[lines];
+    const url = urls[greetings[lines]++ % urls.length];
+    await playVoice({ url, onSpeaking });
+    if (alive) greetingTimer = setTimeout(greet, 25000);
+  }
+  // Browser autoplay rules require the first interaction; returning lobby screens can speak immediately.
+  let greetingStarted = false;
+  const startGreeting = () => {
+    if (greetingStarted || !alive) return;
+    greetingStarted = true;
+    void greet();
+  };
+  addEventListener('pointerdown', startGreeting, { once: true });
+  addEventListener('keydown', startGreeting, { once: true });
+  if (navigator.userActivation?.hasBeenActive) startGreeting();
 
+  function lookAt(x, y) {
+    const r = face.getBoundingClientRect();
+    const dx = x - r.left - r.width / 2, dy = y - r.top - r.height / 2;
+    const length = Math.max(80, Math.hypot(dx, dy));
+    pupils.forEach((p, i) => {
+      p.setAttribute('cx', (i ? 65 : 35) + dx / length * 3.5);
+      p.setAttribute('cy', 42 + dy / length * 4.5);
+    });
+  }
+  const pointer = event => { if (!quiet) lookAt(event.clientX, event.clientY); };
+  addEventListener('pointermove', pointer);
+  function watch(view, project, now) {
+    const cars = view?.cars.filter(c => c.s !== CAR_STATE.DEAD && c.s !== CAR_STATE.DISCONNECTED) || [];
+    if (!cars.length) return;
+    if (now >= switchAt || !cars.some(c => c.id === watchedId)) {
+      const index = cars.findIndex(c => c.id === watchedId);
+      watchedId = cars[(index + 1) % cars.length].id;
+      switchAt = now + 3000;
+    }
+    const target = cars.find(c => c.id === focusId) || cars.find(c => c.id === watchedId);
+    const point = project(target.x, target.y);
+    lookAt(point.x, point.y);
+  }
+  function setState(next) {
+    phase = next.phase || 'idle'; mood = next.mood || mood;
+    focusId = phase === 'idle' ? null : next.focusId || null;
+    el.dataset.phase = phase;
+    status.textContent = phase === 'listening' ? 'Jerity is listening. Make your case now.'
+      : phase === 'thinking' || phase === 'uploading' ? 'Jerity is deciding.'
+      : phase === 'idle' ? 'Jerity is watching.' : 'Jerity has made his decision.';
+    face.setAttribute('aria-label', status.textContent);
+    expression();
+  }
+  function pulse() {
+    if (!alive || reduceMotion) return;
+    el.classList.add('v-reaction');
+    clearTimeout(pulseTimer);
+    pulseTimer = setTimeout(() => el.classList.remove('v-reaction'), 450);
+  }
+  const clock = setInterval(() => { if (!quiet) menuSeconds++; apply(); expression(); }, 1000);
+  expression();
   return {
-    say,
-    react,
-    verdict,
+    setState, watch, pulse, microphoneError,
+    playLine: line => { status.textContent = line.text; return playVoice({ ...line, fallback: true, onSpeaking }); },
+    say: text => playVoice({ text, fallback: true, onSpeaking }),
+    react: events => { if (events?.some(e => e.type === 'kill')) pulse(); },
+    verdict: () => { pulse(); expression(); },
     destroy() {
-      alive = false;
-      clearInterval(typing); clearInterval(clock); clearTimeout(lineTimer); clearTimeout(glitchTimer);
-      removeEventListener('pointermove', look);
-      removeEventListener('pointerdown', look);
-      document.documentElement.classList.remove('v-glitch');
+      alive = false; stopVoice(); offMic();
+      clearInterval(clock); clearTimeout(greetingTimer); clearTimeout(pulseTimer);
+      removeEventListener('pointermove', pointer);
+      removeEventListener('pointerdown', startGreeting);
+      removeEventListener('keydown', startGreeting);
       el.innerHTML = '';
     },
   };

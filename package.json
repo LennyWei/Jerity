@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:jerity": "node --test test/jerity.test.js",
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "dev:test": "node --watch server/index.js --test-room",

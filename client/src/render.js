@@ -352,7 +352,7 @@ export function createRenderer(canvas, opts = {}) {
     const sx = shake ? (Math.random() * 2 - 1) * shake : 0;
     const sy = shake ? (Math.random() * 2 - 1) * shake : 0;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox + sx), dpr * (oy + sy));
-    drawArena();
+    drawArena(view?.obstaclesDisabled);
     drawSkids();
 
     const cars = view?.cars || [];
@@ -446,7 +446,7 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillRect(0, 0, cssW, cssH);
   }
 
-  function drawArena() {
+  function drawArena(obstaclesDisabled = false) {
     const { W, H } = ARENA;
     ctx.fillStyle = pal.floor;
     ctx.fillRect(0, 0, W, H);
@@ -498,6 +498,7 @@ export function createRenderer(canvas, opts = {}) {
     for (let y = 100; y < H; y += 100) { ctx.fillRect(0, y - 4, 10, 8); ctx.fillRect(W - 10, y - 4, 10, 8); }
 
     obstacles.forEach((o, i) => {
+      if (obstaclesDisabled) return;
       const since = lastNow - (obstacleHitAt.get(i) ?? -1e9);
       drawObstacle(ctx, o, pal, since < 260 ? 1 - since / 260 : 0);
     });
@@ -722,9 +723,10 @@ export function createRenderer(canvas, opts = {}) {
     if (view && typeof view.timeLeft === 'number') {
       const s = Math.max(0, Math.ceil(view.timeLeft));
       const label = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-      pill(cssW / 2, 20, label, s <= 10 ? '#ff5a5f' : '#e8ecf4', 18);
+      const timerX = hud.jerity ? cssW / 2 - 92 : cssW / 2;
+      pill(timerX, 20, label, s <= 10 ? '#ff5a5f' : '#e8ecf4', 18);
       const left = cars.filter((c) => c.s !== CAR_STATE.DEAD).length;
-      pill(cssW / 2, 48, `${left} left`, '#9aa3b5', 12);
+      pill(timerX, 48, `${left} left`, '#9aa3b5', 12);
     }
 
     if (mine) { // own HP (top left) and score (top right)
@@ -965,6 +967,10 @@ export function createRenderer(canvas, opts = {}) {
 
   return {
     resize, draw, addEvents, setPlayers, destroy,
+    project: (x, y) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: rect.left + ox + x * scale, y: rect.top + oy + y * scale };
+    },
     setMe: (id) => { me = id; },
     /** Arena layout from the lobby (a key of MAPS). */
     setMap: (id) => { obstacles = MAPS[id]?.obstacles ?? MAPS[DEFAULT_MAP]?.obstacles ?? OBSTACLES; obstacleHitAt.clear(); },

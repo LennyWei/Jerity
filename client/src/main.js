@@ -10,6 +10,7 @@ import './style.css';
 import { net } from './net.js';
 import { h, keepQuery } from './ui.js';
 import { bumpCorruption } from './verity-ui.js';
+import { disableMicrophone } from './jerity-audio.js';
 import { C2S, S2C, ROOM_STATE } from '../../shared/protocol.js';
 import * as home from './screens/home.js';
 import * as lobbyScreen from './screens/lobby.js';
@@ -38,6 +39,7 @@ function show(name, mountFn) {
 // ---------------------------------------------------------------------------
 
 function goHome(code = '', error = '') {
+  disableMicrophone();
   if (session.code) { net.emit(C2S.LEAVE, {}); bumpCorruption(0.02); }
   Object.assign(session, { playerId: null, code: null, lobby: null });
   history.replaceState(null, '', (code ? `/join/${code}` : '/') + keepQuery());

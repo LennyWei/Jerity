@@ -119,7 +119,7 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
   root.append(el);
   renderQr(qr, joinUrl(state.code));
   render();
-  const verity = mountVerity(helper, { lines: LINES.lobby, name: () => state.players.find((p) => p.id === playerId)?.name });
+  const verity = mountVerity(helper, { lines: LINES.lobby, microphone: true });
 
   return () => { off(); verity.destroy(); el.remove(); };
 }

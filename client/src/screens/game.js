@@ -20,6 +20,7 @@ import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
 import * as input from '../input.js';
 import { mountVerity, corruption, LINES } from '../verity-ui.js';
+import { connectJerity } from '../jerity-round.js';
 
 const CSS = `
 .bb-game { position: fixed; inset: 0; background: #0b0d12; overflow: hidden;
@@ -31,28 +32,10 @@ const CSS = `
   font: 700 13px system-ui, sans-serif; color: #e8ecf4; padding: 7px 14px; border-radius: 999px;
   background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.25); touch-action: manipulation; }
 .bb-center.done { color: #5ce1a0; border-color: #5ce1a0; }
-/* Verity in the corner during a match. Taps go through him to the game. */
-.bb-verity { position: absolute; z-index: 3; pointer-events: none; width: min(34vw, 250px);
-  left: max(12px, env(safe-area-inset-left)); bottom: max(10px, env(safe-area-inset-bottom));
-  --sun: #f6b93b; --fg: #2b2733; --panel: #fffaf0; display: flex; align-items: flex-end; gap: 8px;
-  font-family: 'Fredoka', 'Trebuchet MS', system-ui, sans-serif; }
-.bb-verity .v-face { width: 44px; flex: none; }
-.bb-verity .v-face svg { display: block; width: 100%; height: auto; overflow: visible; }
-.bb-verity .v-head { fill: var(--sun); stroke: var(--fg); stroke-width: 3; }
-.bb-verity .v-eye { fill: #fff; stroke: var(--fg); stroke-width: 2.5; }
-.bb-verity .v-pupil { fill: var(--fg); }
-.bb-verity .v-mouth { fill: none; stroke: var(--fg); stroke-width: 4; stroke-linecap: round; }
-.bb-verity .v-bubble { position: relative; flex: 1; min-width: 0; background: var(--panel); color: var(--fg);
-  border: 2px solid var(--fg); border-radius: 14px; padding: 6px 10px; font-size: 13px; font-weight: 500; line-height: 1.3; }
-.bb-verity .v-bubble:has(.v-text:empty) { visibility: hidden; }
-.bb-verity.v-whisper .v-bubble { background: #0a0a0a; color: #ff2a3a; border-color: #ff2a3a; font-family: 'VT323', ui-monospace, monospace; font-size: 17px; }
-[data-verity-stage="2"] .bb-verity .v-bubble, [data-verity-stage="3"] .bb-verity .v-bubble { font-family: 'VT323', ui-monospace, monospace; font-size: 16px; }
-[data-verity-stage="2"] .bb-verity .v-eye, [data-verity-stage="3"] .bb-verity .v-eye { fill: #111; }
-[data-verity-stage="2"] .bb-verity .v-pupil { fill: #fff; }
-[data-verity-stage="3"] .bb-verity { --sun: #8c7a63; --panel: #211816; --fg: #e6d3c8; }
-[data-verity-stage="3"] .bb-verity .v-pupil { fill: #ff2a3a; }
+/* Jerity remains above the arena; only his audio controls intercept taps. */
+.bb-verity { position: absolute; z-index: 4; left: 50%; top: max(8px, env(safe-area-inset-top));
+  transform: translateX(-50%); pointer-events: none; --sun: #f6b93b; --fg: #2b2733; }
 .v-glitch .bb-game canvas { transform: translateX(-4px) skewX(-1deg); }
-.bb-game.out .bb-verity { bottom: max(56px, env(safe-area-inset-bottom)); }
 .bb-overlay { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center;
   justify-content: center; gap: 14px; background: rgba(6,8,12,0.94); color: #fff; text-align: center;
   font: 700 20px system-ui, sans-serif; z-index: 5; padding: 24px; }
@@ -107,9 +90,9 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   renderer.setMe(playerId);
   if (lobby) { renderer.setPlayers(lobby.players); renderer.setMap(lobby.map); }
 
-  // Verity watches the match from the corner and comments on what happens to you.
+  // Jerity watches the cars and speaks the server's shared ruling.
   let names = new Map((lobby?.players || []).map((p) => [p.id, p.name]));
-  const verity = mountVerity(el.querySelector('.bb-verity'), { lines: LINES.match, quiet: true, name: () => names.get(playerId) });
+  const verity = mountVerity(el.querySelector('.bb-verity'), { lines: LINES.match, quiet: true, microphone: !!playerId });
   const nameOf = (id) => names.get(id) || 'someone';
   const interp = createInterp();
 
@@ -123,6 +106,9 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   let sending = false;
   let lastSnapAt = 0;
   let roundOf = lobby;        // latest LobbyState: { round, rounds } while a match is on
+  const disconnectJerity = connectJerity({ net, face: verity, playerId, initialState: lobby?.jerity,
+    onPhase: phase => { if (phase !== 'idle') { clearTimeout(goTimer); count = null; } },
+  });
 
   // Motion permission fallback: lobby should already have asked from a tap.
   if (playerId && input.needsPermission()) motionEl.classList.add('show');
@@ -324,6 +310,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     const tilt = input.getTilt();
     const move = input.getMove();
     renderer.draw(view, now, {
+      jerity: true,
       tilt: showTilt && !OMNI ? tilt : undefined,
       throttle: showTilt && !OMNI ? input.getThrottle() : undefined,
       move: showTilt && OMNI ? move : undefined,
@@ -335,6 +322,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
       flip,
       banner: banner(),
     });
+    verity.watch(view, renderer.project, now);
   }
   raf = requestAnimationFrame(frame);
 
@@ -350,6 +338,7 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
     window.removeEventListener('resize', onResize);
     try { wakeLock?.release(); } catch { /* already released */ }
     renderer.destroy();
+    disconnectJerity();
     verity.destroy();
     el.remove();
   };

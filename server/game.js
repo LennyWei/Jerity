@@ -81,6 +81,7 @@ export function createGame(players, mapId = DEFAULT_MAP) {
       cars: [...cars.values()].map(c => packCar({ ...c, sc: liveScore(stats.get(c.id)) })),
       events: events.splice(0),
       timeLeft: Math.max(0, Math.ceil(timeLeft)),
+      obstaclesDisabled: now < obstaclesOffUntil,
     };
   }
 
@@ -592,7 +593,10 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
   if (!ruling || typeof ruling.action !== "string") return false;
 
   const action = ruling.action;
-  const car = cars.get(ruling.target);
+  const targets = Array.isArray(ruling.target) ? ruling.target : [ruling.target, ruling.target2];
+  const car = cars.get(targets[0]);
+  const bounded = (value, fallback, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+  const duration = bounded(ruling.params?.duration, 5, 2, 10) * 1000;
 
   const valid = c => c && c.body &&
     c.s !== CAR_STATE.DEAD &&
@@ -610,7 +614,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
     for (const body of arenaObstacles) {
       body.setActive(false);
     }
-    obstaclesOffUntil = now + 5000;
+    obstaclesOffUntil = now + duration;
     return true;
   }
 
@@ -635,28 +639,28 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
   switch (action) {
     case "freeze_player":
       car.s = CAR_STATE.STUNNED;
-      car.stunUntil = now + 3000;
+      car.stunUntil = now + duration;
       car.frozenUntil = car.stunUntil;
       car.body.setLinearVelocity(Vec2(0, 0));
       car.body.setAngularVelocity(0);
       break;
 
     case "heal_player":
-      car.hp = Math.min(car.maxHp, car.hp + 30);
+      car.hp = Math.min(car.maxHp, car.hp + bounded(ruling.params?.amount, 30, 15, 30));
       break;
 
     case "boost_player":
       car.buff = BUFF.BOOST;
-      car.buffUntil = now + 5000;
+      car.buffUntil = now + duration;
       break;
 
     case "shield_player":
       car.buff = BUFF.SHIELD;
-      car.buffUntil = now + 5000;
+      car.buffUntil = now + duration;
       break;
 
     case "damage_player":
-      applyDamage(car, 25, null);
+      applyDamage(car, bounded(ruling.params?.amount, 25, 10, 40), null);
       checkDeath(car);
       break;
 
@@ -679,19 +683,19 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
       break;
 
     case "slow_player":
-      car.slowUntil = now + 5000;
+      car.slowUntil = now + duration;
       break;
 
     case "reverse_controls":
-      car.reverseUntil = now + 5000;
+      car.reverseUntil = now + duration;
       break;
 
     case "super_boost":
-      car.superUntil = now + 5000;
+      car.superUntil = now + duration;
       break;
 
     case "swap_positions":
-      const other = cars.get(ruling.target2);
+      const other = cars.get(targets[1]);
       if (!valid(other) || other.id === car.id) return false;
 
       const old = { x: car.x, y: car.y, a: car.a };

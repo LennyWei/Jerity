@@ -1,0 +1,30 @@
+.verity { width: max-content; max-width: 100%; display: flex; flex-direction: column; align-items: center;
+  gap: 6px; --sun: #f6b93b; --fg: #2b2733; }
+.v-face { width: 104px; flex: none; filter: drop-shadow(0 6px 12px #0004); }
+.v-face svg { display: block; width: 100%; height: auto; overflow: visible; }
+.v-head { fill: var(--sun); stroke: var(--fg); stroke-width: 3; }
+.v-eye { fill: white; stroke: var(--fg); stroke-width: 2.5; }
+.v-pupil { fill: var(--fg); transition: cx .12s, cy .12s; }
+.v-mouth { fill: none; stroke: var(--fg); stroke-width: 4; stroke-linecap: round; }
+.v-halo { fill: none; stroke: #71e9b5; stroke-width: 2; opacity: 0; transform-origin: center; }
+.verity[data-phase="listening"] .v-halo { opacity: 1; animation: jerity-listen 1s ease-in-out infinite; }
+.verity[data-phase="thinking"] .v-halo, .verity[data-phase="uploading"] .v-halo {
+  opacity: 1; stroke: #b7a3ff; stroke-dasharray: 12 8; animation: jerity-think 4s linear infinite; }
+.v-speaking .v-mouth { transform-origin: 50px 67px; animation: jerity-talk .24s ease-in-out infinite alternate; }
+.v-speaking .v-halo { opacity: .7; stroke: #ffd66d; }
+.v-reaction .v-face { animation: jerity-react .45s ease-out; }
+.v-controls { display: flex; gap: 5px; pointer-events: auto; }
+.v-controls button { appearance: none; min-width: 36px; min-height: 32px; border-radius: 18px; padding: 4px 10px;
+  border: 1px solid #ffffff50; background: #16171ee8; color: #f5eedc; cursor: pointer;
+  font: 600 11px system-ui, sans-serif; touch-action: manipulation; }
+.v-controls button[aria-pressed="true"].v-mic { color: #71e9b5; border-color: #71e9b5; }
+.v-controls button:focus-visible { outline: 3px solid #71e9b5; outline-offset: 3px; }
+.v-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.bb-verity .v-face, .spectate-verity .v-face { width: clamp(62px, 12vh, 104px); }
+@keyframes jerity-listen { 50% { transform: scale(1.06); opacity: .45; } }
+@keyframes jerity-think { to { transform: rotate(360deg); } }
+@keyframes jerity-talk { to { transform: scaleY(.55); } }
+@keyframes jerity-react { 50% { transform: scale(1.12) rotate(-5deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .verity *, .verity[data-phase] .v-halo { animation: none !important; transition: none; }
+}

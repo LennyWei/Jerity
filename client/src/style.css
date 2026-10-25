@@ -171,24 +171,7 @@ h2 { margin: 0; font-size: 20px; }
 .crt .divider { font-family: var(--term); font-size: 18px; }
 .crt .qr { border: 3px solid var(--fg); }
 
-/* Verity: face + speech bubble */
-.verity { width: min(420px, 100%); display: flex; align-items: flex-end; gap: 12px; min-height: 84px; }
-.v-face { width: 72px; flex: none; }
-.v-face svg { display: block; width: 100%; height: auto; overflow: visible; }
-.v-head { fill: var(--sun); stroke: var(--fg); stroke-width: 3; }
-.v-eye { fill: #fff; stroke: var(--fg); stroke-width: 2.5; }
-.v-pupil { fill: var(--fg); transition: cx 0.15s, cy 0.15s; }
-.v-mouth { fill: none; stroke: var(--fg); stroke-width: 4; stroke-linecap: round; transition: d 0.6s; }
-.v-bubble { position: relative; flex: 1; min-width: 0; background: var(--panel); border: 3px solid var(--fg);
-  border-radius: 18px; padding: 12px 14px; font-size: 17px; font-weight: 500; line-height: 1.35; min-height: 3.2em; }
-.v-bubble::before { content: ''; position: absolute; left: -12px; bottom: 14px; border: 9px solid transparent;
-  border-right-color: var(--fg); border-left: 0; }
-.v-text::after { content: '▍'; margin-left: 2px; opacity: 0.6; animation: v-blink 1s steps(1) infinite; }
-@keyframes v-blink { 50% { opacity: 0; } }
-/* the wrong line that flashes for a split second */
-.v-whisper .v-bubble { background: #0a0a0a; color: #ff2a3a; border-color: #ff2a3a; font-family: var(--term); font-size: 22px; letter-spacing: 0.08em; }
-/* as he turns: terminal voice, hollow eyes, then red pupils */
-[data-verity-stage="2"] .v-bubble, [data-verity-stage="3"] .v-bubble { font-family: var(--term); font-size: 21px; letter-spacing: 0.04em; }
+/* Jerity expressions keep progressing as the menus become corrupted. */
 [data-verity-stage="2"] .v-eye, [data-verity-stage="3"] .v-eye { fill: #111; }
 [data-verity-stage="2"] .v-pupil { fill: #fff; }
 [data-verity-stage="3"] .v-pupil { fill: #ff2a3a; filter: drop-shadow(0 0 3px #ff2a3a); }
@@ -202,7 +185,7 @@ h2 { margin: 0; font-size: 20px; }
 @keyframes v-shake { 0%, 92%, 100% { transform: none; } 94% { transform: translate(2px, -1px); } 96% { transform: translate(-3px, 1px); } 98% { transform: translate(1px, 0); } }
 @media (prefers-reduced-motion: reduce) {
   .crt { transition: none; }
-  [data-verity-stage="3"] .crt .brand, .v-text::after { animation: none; }
+  [data-verity-stage="3"] .crt .brand { animation: none; }
 }
 /* Last stage: the screen dies. Near-black, dim red, his face drained. */
 [data-verity-stage="3"] .crt {
@@ -213,13 +196,10 @@ h2 { margin: 0; font-size: 20px; }
 [data-verity-stage="3"] .crt .btn.primary { color: #f3e2d8; }
 [data-verity-stage="3"] .crt .room-tag, [data-verity-stage="3"] .crt .tag.host { color: #17110f; }
 
-/* Verity announcing on the laptop spectator screen (bottom right, over the arena) */
-.spectate-verity { position: absolute; right: 16px; bottom: 16px; width: min(440px, 42vw); z-index: 5;
-  --sun: #f6b93b; --fg: #2b2733; --panel: #fffaf0;
-  --friendly: 'Fredoka', 'Trebuchet MS', system-ui, sans-serif; --term: 'VT323', ui-monospace, monospace; font-family: var(--friendly); }
-.spectate-verity .v-face { width: 84px; }
-.spectate-verity .v-bubble { color: var(--fg); font-size: 19px; }
-[data-verity-stage="3"] .spectate-verity { --sun: #8c7a63; --panel: #211816; --fg: #e6d3c8; }
+/* The spectator sees the same persistent referee above the arena. */
+.spectate-verity { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 5;
+  pointer-events: none; --sun: #f6b93b; --fg: #2b2733; }
+[data-verity-stage="3"] .spectate-verity { --sun: #8c7a63; --fg: #e6d3c8; }
 /* results: Verity above the winner */
 .crt .board th { color: var(--dim); }
 .crt .board td { border-top-color: var(--line); }

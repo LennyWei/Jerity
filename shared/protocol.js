@@ -10,6 +10,8 @@
 
 // Client -> server
 export const C2S = {
+  JERITY_AUDIO: 'jerityAudio', // { roundId, audioBase64, mimeType }; one recording per player
+  JERITY_PLAYED: 'jerityPlayed', // { roundId, lineId }; playback completed or unavailable
   CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId, rejoinKey } | { error }
   JOIN_ROOM:   'joinRoom',   // { code, name, playerId?, rejoinKey? }  ack -> { playerId, rejoinKey } | { error }
                              //   playerId + rejoinKey (from your earlier ack): rejoin as that player after a
@@ -27,6 +29,9 @@ export const C2S = {
 
 // Server -> client
 export const S2C = {
+  JERITY_STATE: 'jerityState', // { roundId, phase, durationMs?, remainingMs?, mood?, focusId? }
+  JERITY_VOICE: 'jerityVoice', // { roundId, lineId, timing, text, audioBase64?, timeoutMs }
+  JERITY_RULING: 'jerityRuling', // { roundId, events, applied }
   LOBBY:     'lobby',     // LobbyState
   COUNTDOWN: 'countdown', // { seconds }
   SNAP:      'snap',      // Snapshot

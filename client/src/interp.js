@@ -83,7 +83,7 @@ export function createInterp({ delayMs = CONFIG.INTERP_DELAY_MS ?? 150, now = ()
   }
 
   function view(snap, cars) {
-    return { t: renderT, cars, timeLeft: snap.timeLeft };
+    return { t: renderT, cars, timeLeft: snap.timeLeft, obstaclesDisabled: snap.obstaclesDisabled };
   }
 
   /** Events from snapshots at or before the last sampled time, so effects line up with the cars. */
