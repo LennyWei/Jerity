@@ -40,7 +40,7 @@ export const CONFIG = {
   REAR_KIND_MIN: 0.5,    // how square from behind a hit must be to count as 'rear'
   ATTACKER_RECOIL: 0.1,  // attacker takes 10% of what it deals on a side/rear hit
   HEADON_THRESHOLD: 0.7, // both noses this aligned with the hit = head-on
-  HEADON_MULT: 0.35,     // head-on: each car takes DMG_K * closingSpeed^2 * this
+  HEADON_MULT: 0.35,     // head-on: each car takes DMG_K * (the other car's speed into it)^2 * this
   CONCUSSION_MS: 1500,   // head-on stun: no control for both cars
   FLIPPED_DMG_MULT: 1.5, // flipped cars are easy prey
   KILL_CREDIT_MS: 3000,  // wall death within this of being hit credits the hitter

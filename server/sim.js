@@ -188,18 +188,31 @@ const sideDmg = v => CONFIG.DMG_K * v * v;                       // nose square 
   near('rear vs side at 8 m/s: damage ratio', (r?.dmg ?? NaN) / (s?.dmg ?? NaN), 1 + CONFIG.REAR_BONUS, 0.06, 'x');
   check("a hit from behind is kind 'rear'", r?.kind === HIT_KIND.REAR, JSON.stringify(r));
 }
+// Head-on: two cars nose to nose on the y = 10 m line, 5 cm apart, coasting at vA and vB.
+function headOn(vA, vB) {
+  const { game, cars } = setup({ x: 28.975, y: 10, v: vA }, { x: 31.025, y: 10, a: Math.PI, v: vB });
+  let event = null;
+  run(game, [COAST, COAST], CONFIG.TICK_HZ, () => (event = game.snapshot().events.find(e => e.type === EVENT.HEADON)));
+  return { game, cars, event };
+}
+const headonDmg = v => CONFIG.DMG_K * v * v * CONFIG.HEADON_MULT; // from the other car's speed into you
 {
-  const { game, cars: [a, b] } = setup({ x: 28.975, y: 10, v: 6 }, { x: 31.025, y: 10, a: Math.PI, v: 6 });
-  let headon = null;
-  run(game, [COAST, COAST], CONFIG.TICK_HZ, () => (headon = game.snapshot().events.find(e => e.type === EVENT.HEADON)));
-  const want = CONFIG.DMG_K * 12 * 12 * CONFIG.HEADON_MULT; // closing 6 + 6 m/s
-  near('head-on at 6 + 6 m/s: damage each', headon?.dmg ?? NaN, want, want * DMG_SLACK, 'HP');
+  const { game, cars: [a, b], event } = headOn(10, 10);
+  near('head-on at 10 + 10 m/s: damage each', event?.dmgA ?? NaN, headonDmg(10), headonDmg(10) * DMG_SLACK, 'HP');
   check('head-on: both hurt equally and stunned',
     a.hp === b.hp && a.hp < spec.hp && a.s === CAR_STATE.STUNNED && b.s === CAR_STATE.STUNNED,
     `hp ${a.hp}/${b.hp}, states ${a.s}/${b.s}`);
   const stunTicks = run(game, [COAST, COAST], 3 * CONFIG.TICK_HZ,
     () => a.s === CAR_STATE.ALIVE && b.s === CAR_STATE.ALIVE);
   near('head-on stun lasts', stunTicks * dt, CONFIG.CONCUSSION_MS / 1000, 0.05, 's');
+}
+{
+  // A fast rammer meets a car that only just started toward it: the rammer hits far harder.
+  const { cars: [a, b], event } = headOn(12, 4);
+  const tookA = spec.hp - a.hp, tookB = spec.hp - b.hp;
+  check(`head-on, 12 vs 4 m/s: the slow car takes the big hit (${tookB} HP vs ${tookA} HP)`,
+    tookB > tookA && event?.dmgA === tookA && event?.dmgB === tookB, JSON.stringify(event));
+  near('...damage ratio, (12 / 4)^2', tookB / tookA, 9, 1.5, 'x');
 }
 {
   const { game, cars: [car] } = setup({ x: 48.95, y: 10, v: spec.maxSpeed }); // nose 5 cm from the right wall
@@ -275,6 +288,7 @@ const fwdSpeed = car => Vec2.dot(car.body.getWorldVector(Vec2(1, 0)), car.body.g
 }
 {
   const { game, cars: [a, b] } = setup({ x: 28.975, y: 10, v: spec.maxSpeed }, { x: 31.025, y: 10, a: Math.PI, v: spec.maxSpeed });
+  a.hp = b.hp = Math.floor(headonDmg(spec.maxSpeed) / 2); // low enough that a top-speed head-on kills both
   const events = [];
   run(game, [COAST, COAST], 10, () => { events.push(...game.snapshot().events); });
   const kills = events.filter(e => e.type === EVENT.KILL);

@@ -55,7 +55,8 @@ export const HIT_KIND = { SIDE: 'side', REAR: 'rear' };
 
 export const EVENT = {
   HIT: 'hit',         // { attacker, victim, dmg, kind }        nose into side or rear
-  HEADON: 'headon',   // { a, b, dmg, stunMs }                  both take dmg, both stunned
+  HEADON: 'headon',   // { a, b, dmg, dmgA?, dmgB?, stunMs }    both stunned; dmgA/dmgB: what each took
+                      //                                        (each from the other's speed); dmg: the larger
   WALL: 'wall',       // { id, dmg }                            wall or obstacle self-damage
   FLIP: 'flip',       // { id }
   RECOVER: 'recover', // { id }

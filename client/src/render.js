@@ -124,8 +124,9 @@ export function createRenderer(canvas, opts = {}) {
           const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
           rings.push({ x, y, r0: 10, r1: 120, life: 0, max: 450, color: '#ffffff' });
           sparks(x, y, 30, ['#ffffff', '#c8d6ff', '#ffd23f'], 360);
-          for (const c of [a, b]) {
-            if (e.dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(e.dmg)}`, '#ff6b6b', 16);
+          // Each car shows what it took (dmgA/dmgB: the faster car hits harder); older servers send dmg only.
+          for (const [c, dmg] of [[a, e.dmgA ?? e.dmg], [b, e.dmgB ?? e.dmg]]) {
+            if (dmg >= 1) floatText(c.x, c.y - 20, `-${Math.round(dmg)}`, '#ff6b6b', 16);
             floatText(c.x, c.y - 44, 'CONCUSSED', '#c8d6ff', 15);
           }
           carFlash.set(e.a, lastNow);
@@ -134,7 +135,10 @@ export function createRenderer(canvas, opts = {}) {
             hurt(10, 120);
             flashWhite = 1;
             showBanner('CONCUSSED', '#c8d6ff');
-            toast(`Head-on with ${nameOf(e.a === me ? e.b : e.a)} · both -${Math.round(e.dmg || 0)}`, '#c8d6ff');
+            const meA = e.a === me;
+            const took = Math.round((meA ? e.dmgA : e.dmgB) ?? e.dmg ?? 0);
+            const dealt = Math.round((meA ? e.dmgB : e.dmgA) ?? e.dmg ?? 0);
+            toast(`Head-on with ${nameOf(meA ? e.b : e.a)} · you -${took}, them -${dealt}`, '#c8d6ff');
           }
           break;
         }

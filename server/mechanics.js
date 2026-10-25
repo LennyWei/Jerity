@@ -13,8 +13,8 @@ const noseFactor = nose => CONFIG.NOSE_MIN_FRAC + (1 - CONFIG.NOSE_MIN_FRAC) * n
 
 /**
  * 5.1 Car-to-car hit. n is the unit contact normal from car A to car B, fwd* are unit
- * forward vectors. Returns null (too slow to count), { type: 'headon', dmg } (each car
- * takes dmg), or { type: 'hit', attacker: 'A' | 'B', dmgToVictim, dmgToAttacker, kind }.
+ * forward vectors. Returns null (too slow to count), { type: 'headon', dmgToA, dmgToB }, or
+ * { type: 'hit', attacker: 'A' | 'B', dmgToVictim, dmgToAttacker, kind }.
  */
 export function carHit({ vA, vB, n, fwdA, fwdB, massA, massB }) {
   const approachA = Math.max(0, dot(vA, n));  // A's speed into B
@@ -24,8 +24,13 @@ export function carHit({ vA, vB, n, fwdA, fwdB, massA, massB }) {
   const noseB = Math.max(0, -dot(fwdB, n));
 
   if (noseA >= CONFIG.HEADON_THRESHOLD && noseB >= CONFIG.HEADON_THRESHOLD) {
-    const closing = approachA + approachB;
-    return { type: 'headon', dmg: CONFIG.DMG_K * closing * closing * CONFIG.HEADON_MULT };
+    // Each car is hurt by the other's speed into it: a fast rammer hits hard, and a car that
+    // only just started moving toward it barely hurts it back.
+    return {
+      type: 'headon',
+      dmgToA: CONFIG.DMG_K * approachB * approachB * CONFIG.HEADON_MULT * Math.sqrt(massB / massA),
+      dmgToB: CONFIG.DMG_K * approachA * approachA * CONFIG.HEADON_MULT * Math.sqrt(massA / massB),
+    };
   }
 
   // The attacker is whoever drove into the other harder, nose first.

@@ -354,12 +354,12 @@ export function createGame(players) {
     if (!hit || coolingDown([a.id, b.id].sort().join('|'))) return;
 
     if (hit.type === 'headon') {
-      const dmgA = applyDamage(a, hit.dmg, b.id);
-      const dmgB = applyDamage(b, hit.dmg, a.id);
+      const dmgA = applyDamage(a, hit.dmgToA, b.id);
+      const dmgB = applyDamage(b, hit.dmgToB, a.id);
       for (const car of [a, b]) {
         if (car.s === CAR_STATE.ALIVE) { car.s = CAR_STATE.STUNNED; car.stunUntil = now + CONFIG.CONCUSSION_MS; }
       }
-      events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg: Math.max(dmgA, dmgB), stunMs: CONFIG.CONCUSSION_MS });
+      events.push({ type: EVENT.HEADON, a: a.id, b: b.id, dmg: Math.max(dmgA, dmgB), dmgA, dmgB, stunMs: CONFIG.CONCUSSION_MS });
     } else {
       const [attacker, victim] = hit.attacker === 'A' ? [a, b] : [b, a];
       const dmg = applyDamage(victim, hit.dmgToVictim, attacker.id);

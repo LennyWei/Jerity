@@ -173,10 +173,10 @@ If `max(approachA, approachB) < MIN_IMPACT_SPEED`, ignore. Otherwise:
 
 **Head-on** (both `noseA` and `noseB` ≥ `HEADON_THRESHOLD`):
 ```
-closing = approachA + approachB
-dmg     = DMG_K * closing² * HEADON_MULT     // same for both cars
+dmgToA = DMG_K * approachB² * HEADON_MULT * sqrt(massB / massA)   // hurt by the other's speed into you
+dmgToB = DMG_K * approachA² * HEADON_MULT * sqrt(massA / massB)
 ```
-Both cars take `dmg` and both are **stunned** for `CONCUSSION_MS` (1.5 s). Emit `headon`.
+Each car takes damage from the other car's speed into it, so a fast rammer hits hard and a car that only just started toward it barely hurts it back (12 vs 4 m/s: 28 vs 3 HP). Both are **stunned** for `CONCUSSION_MS` (1.5 s). Emit `headon` with `dmgA`/`dmgB` (what each took) and `dmg` (the larger).
 
 **Side or rear** (otherwise): the attacker is the car with the larger `approach * (0.3 + 0.7 * nose)`. Say A attacks B:
 ```
