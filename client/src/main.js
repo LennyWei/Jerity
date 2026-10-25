@@ -105,10 +105,19 @@ net.on(S2C.COUNTDOWN, ({ seconds }) => {
   if (session.playerId && seconds > 0 && (screen === 'lobby' || screen === 'results')) showGame(seconds);
 });
 
-// Connection: show it when it drops; on reconnect the server has forgotten us, so rejoin.
+// Connection. Before the first connect, say we're connecting; after a few seconds, that the
+// server may be waking up (Render's free plan sleeps). When it drops, say so; on reconnect the
+// server has forgotten us, so rejoin.
 let everConnected = false;
+banner.className = 'banner info';
+banner.textContent = 'Connecting to the game server…';
+setTimeout(() => {
+  if (!everConnected) banner.textContent = 'Waking up the game server… this can take up to a minute';
+}, 3000);
 net.onStatus(async (up) => {
-  banner.textContent = up ? '' : everConnected ? 'Connection lost · reconnecting…' : '';
+  if (!everConnected && !up) return; // still waking: keep the waking message
+  banner.className = 'banner';
+  banner.textContent = up ? '' : 'Connection lost · reconnecting…';
   if (!up) return;
   if (!everConnected) { everConnected = true; return; }
   if (!session.code) return;

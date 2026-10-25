@@ -92,3 +92,4 @@ h2 { margin: 0; font-size: 20px; }
 .banner { position: fixed; left: 50%; top: max(10px, env(safe-area-inset-top)); transform: translateX(-50%); z-index: 50;
   background: var(--bad); color: #fff; font-weight: 800; padding: 8px 14px; border-radius: 999px; font-size: 14px; }
 .banner:empty { display: none; }
+.banner.info { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); }
