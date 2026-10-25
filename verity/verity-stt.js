@@ -1,4 +1,4 @@
-// Groq speech-to-text for the shared 4.5-second round-opening listening window.
+// Groq speech-to-text for the shared six-second listening window while cars keep driving.
 // The browser sends bounded MediaRecorder clips over Socket.IO; credentials stay here.
 
 import { JERITY } from '../shared/jerity.js';

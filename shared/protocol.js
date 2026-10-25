@@ -10,6 +10,8 @@
 
 // Client -> server
 export const C2S = {
+  JERITY_TEST_MIC: 'jerityTestMic', // lobby only; { audioBase64, mimeType } -> private { text } | { error }
+  JERITY_TEST_VOICE: 'jerityTestVoice', // lobby only; {} -> private { audioBase64 } | { error }
   JERITY_AUDIO: 'jerityAudio', // { roundId, audioBase64, mimeType }; one recording per player
   JERITY_PLAYED: 'jerityPlayed', // { roundId, lineId }; playback completed or unavailable
   CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId, rejoinKey } | { error }

@@ -600,7 +600,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
   const bounded = (value, fallback, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const duration = bounded(ruling.params?.duration, 5, 2, 10) * 1000;
 
-  const valid = c => c && c.body &&
+  const valid = c => c && c.body && c.hp > 0 &&
     c.s !== CAR_STATE.DEAD &&
     c.s !== CAR_STATE.DISCONNECTED;
 
@@ -716,6 +716,7 @@ function driveOmni(car, input, dt, spec, speedMult, engineMult) {
     return {
     cars, stats,
     get now() { return now; },
+    get timeLeft() { return Math.max(0, timeLeft); },
     step, snapshot, spawn, remove, setAway,
     over, winnerId, survivedS, applyJerityAction,
     /** The round is decided: keep driving for the victory lap, but nothing hurts anymore. */

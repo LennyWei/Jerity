@@ -121,6 +121,31 @@ test('provider deadline releases the room even when the provider never settles',
   assert.equal(game.cars.get('a').buff, BUFF.NONE);
 });
 
+test('a target killed during the before line receives no effect or success line', async () => {
+  const { cycle, game, events } = setup({ onEvent(type, payload, g) {
+    if (type === S2C.JERITY_VOICE && payload.timing === 'before_effect') {
+      g.cars.get('a').hp = 1;
+      g.applyJerityAction({ action: 'damage_player', target: 'a', params: { amount: 10 } });
+    }
+  } });
+  await cycle.start();
+  assert.equal(game.cars.get('a').buff, BUFF.NONE);
+  assert.equal(events.find(e => e.type === S2C.JERITY_RULING).payload.applied, false);
+  assert.ok(!events.some(e => e.type === S2C.JERITY_VOICE && e.payload.timing === 'after_effect'));
+});
+
+test('cancellation releases a pending provider without waiting for its deadline', { timeout: 1000 }, async () => {
+  let ready;
+  const pending = new Promise(resolve => { ready = resolve; });
+  const { cycle } = setup({ pipeline: { runCycle() { ready(); return new Promise(() => {}); } },
+    customLimits: { ...limits, PIPELINE_TIMEOUT_MS: 60000 } });
+  const running = cycle.start();
+  await pending;
+  cycle.cancel();
+  await running;
+  assert.equal(cycle.busy, false);
+});
+
 test('missing playback acknowledgments have a deadline', async () => {
   const game = createGame(roster);
   const cycle = createJerityRound({ game, pipeline: { runCycle: async () => ruling() },
@@ -213,8 +238,10 @@ test('Socket.IO room starts the exchange after countdown and broadcasts the acti
   let captured;
   const rooms = createRooms(io, { pipelineFactory: () => ({ runCycle: async (_state, audios) => {
     captured = audios;
+    await new Promise(resolve => setTimeout(resolve, 1100));
     const result = ruling(); result.events[0].target = audios[0].playerId; return result;
-  } }), jerityLimits: { ...limits, LISTEN_MS: 100, UPLOAD_GRACE_MS: 50, PLAYBACK_TIMEOUT_MS: 1000 } });
+  } }), transcribe: async () => 'I need a boost', generateVoice: async () => Buffer.from('voice fixture'),
+    jerityLimits: { ...limits, LISTEN_MS: 1200, UPLOAD_GRACE_MS: 50, PLAYBACK_TIMEOUT_MS: 1000, PIPELINE_TIMEOUT_MS: 3000 } });
   io.on('connection', rooms.attach);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -224,9 +251,19 @@ test('Socket.IO room starts the exchange after countdown and broadcasts the acti
     await Promise.all([once(player, 'connect'), once(spectator, 'connect')]);
     const created = await player.emitWithAck(C2S.CREATE_ROOM, { name: 'Alice', bots: 1 });
     await spectator.emitWithAck(C2S.SPECTATE, { code: created.code });
+    assert.equal((await player.emitWithAck(C2S.JERITY_TEST_MIC, recording)).text, 'I need a boost');
+    assert.ok((await player.emitWithAck(C2S.JERITY_TEST_MIC, recording)).error);
+    assert.ok((await spectator.emitWithAck(C2S.JERITY_TEST_MIC, recording)).error);
+    assert.equal((await player.emitWithAck(C2S.JERITY_TEST_VOICE, {})).audioBase64, Buffer.from('voice fixture').toString('base64'));
     let countdownFinished = false;
+    let phase, listeningTimes = [], thinkingTimes = [];
+    player.on(S2C.SNAP, snapshot => {
+      if (phase === 'listening') listeningTimes.push(snapshot.timeLeft);
+      if (phase === 'thinking') thinkingTimes.push(snapshot.timeLeft);
+    });
     player.on(S2C.COUNTDOWN, ({ seconds }) => { if (seconds === 0) countdownFinished = true; });
     const idle = new Promise(resolve => player.on(S2C.JERITY_STATE, state => {
+      phase = state.phase;
       if (state.phase === 'listening') {
         assert.equal(countdownFinished, true);
         player.emit(C2S.JERITY_AUDIO, { roundId: state.roundId, ...recording });
@@ -241,6 +278,8 @@ test('Socket.IO room starts the exchange after countdown and broadcasts the acti
     assert.equal(result.applied, true);
     assert.equal(captured.length, 1);
     assert.equal(captured[0].playerId, created.playerId);
+    assert.ok(listeningTimes.length > 1 && listeningTimes.at(-1) < listeningTimes[0], 'clock advances while listening');
+    assert.ok(thinkingTimes.length > 1 && thinkingTimes.at(-1) < thinkingTimes[0], 'clock advances while processing');
   } finally {
     player.disconnect(); spectator.disconnect(); rooms.close();
     await new Promise(resolve => io.close(resolve));

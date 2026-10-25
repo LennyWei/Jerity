@@ -17,6 +17,12 @@ const app = express(), server = http.createServer(app), io = new Server(server);
 const captures = [];
 const cueRequests = [];
 const rooms = createRooms(io, {
+  transcribe: async (audio, mime) => {
+    assert.ok(Buffer.from(audio, 'base64').length > 100);
+    assert.match(mime, /audio\//);
+    return 'Browser microphone test';
+  },
+  generateVoice: async () => cueAudio,
   jerityLimits: { ...JERITY, LISTEN_MS: 1200, UPLOAD_GRACE_MS: 300 },
   pipelineFactory: () => ({ runCycle: async (_state, audios) => {
     captures.push(...audios);
@@ -121,7 +127,13 @@ try {
   await evaluate("document.querySelector('input.field').value = 'Browser Driver'; [...document.querySelectorAll('button')].find(b => b.textContent === 'Practice vs 3 bots').click()");
   await until("!!document.querySelector('.v-mic')");
   await checkMute('lobby');
-  await evaluate("document.querySelector('.v-mic').click()");
+  await evaluate(`document.querySelector('.jerity-tests').open = true;
+    [...document.querySelectorAll('.jerity-tests button')].find(b => b.textContent === 'Test microphone').click()`);
+  await until(`document.querySelector('.jerity-tests output').textContent.includes('Groq heard: "Browser microphone test"')`, 15000);
+  await evaluate(`[...document.querySelectorAll('.jerity-tests button')].find(b => b.textContent === 'Test Jerity voice').click()`);
+  await until(`document.querySelector('.jerity-tests output').textContent.includes('Playing Fish Audio voice')`);
+  await until(`![...document.querySelectorAll('.jerity-tests button')].find(b => b.textContent === 'Test Jerity voice').disabled`);
+  await evaluate("if (document.querySelector('.v-mic').textContent !== 'Mic on') document.querySelector('.v-mic').click()");
   await until("document.querySelector('.v-mic')?.textContent === 'Mic on'");
   await evaluate("[...document.querySelectorAll('button')].find(b => b.textContent === 'Start').click()");
   await until("document.querySelector('.bb-verity')?.dataset.phase === 'listening'");

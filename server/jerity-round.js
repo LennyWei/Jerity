@@ -13,6 +13,24 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
   let actionAt = null;
 
   const current = () => !abort.signal.aborted && isCurrent();
+  const gameState = () => {
+    const roster = players();
+    return {
+      timeLeft: game.timeLeft,
+      players: Object.fromEntries([...game.cars].filter(([, car]) =>
+        car.body && car.hp > 0 && car.s !== CAR_STATE.DEAD && car.s !== CAR_STATE.DISCONNECTED).map(([id, car]) => [id, {
+        hp: car.hp, maxHp: car.maxHp, name: roster.find(p => p.id === id)?.name || id,
+      }])),
+    };
+  };
+  function targetsAvailable(event) {
+    if (!event || ['none', 'remove_walls', 'swap_all_positions'].includes(event.action)) return true;
+    const targets = Array.isArray(event.target) ? event.target : [event.target];
+    return targets.every(id => {
+      const car = game.cars.get(id);
+      return car?.body && car.hp > 0 && car.s !== CAR_STATE.DEAD && car.s !== CAR_STATE.DISCONNECTED;
+    });
+  }
   const state = () => ({
     roundId, phase, mood, focusId,
     durationMs: limits.LISTEN_MS,
@@ -96,35 +114,35 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
       await delay(limits.UPLOAD_GRACE_MS);
       if (!current()) return;
       setPhase('thinking');
-      const roster = players();
-      const gameState = {
-        timeLeft: game.snapshot().timeLeft,
-        players: Object.fromEntries([...game.cars].filter(([, car]) =>
-          car.body && car.s !== CAR_STATE.DEAD && car.s !== CAR_STATE.DISCONNECTED).map(([id, car]) => [id, {
-          hp: car.hp, maxHp: car.maxHp, name: roster.find(p => p.id === id)?.name || id,
-        }])),
-      };
-      let timer;
+      let timer, onAbort;
       const result = await Promise.race([
-        pipeline.runCycle(gameState, [...recordings.values()], { signal: abort.signal }),
+        pipeline.runCycle(gameState(), [...recordings.values()], { signal: abort.signal, getGameState: gameState }),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(new Error('Jerity response timed out')), limits.PIPELINE_TIMEOUT_MS);
+          onAbort = () => reject(new Error('Jerity round cancelled'));
+          abort.signal.addEventListener('abort', onAbort, { once: true });
         }),
-      ]).finally(() => clearTimeout(timer));
+      ]).finally(() => { clearTimeout(timer); abort.signal.removeEventListener('abort', onAbort); });
       if (!current()) return;
       mood = result.internalState?.mood || mood;
       const event = result.events?.[0];
       focusId = Array.isArray(event?.target) ? event.target[0] : event?.target;
       const lines = result.audioBuffers || [];
+      const eligible = targetsAvailable(event);
       setPhase('speaking');
-      for (const line of lines.filter(l => l.timing === 'before_effect')) await speak(line);
+      if (eligible) {
+        for (const line of lines.filter(l => l.timing === 'before_effect')) await speak(line);
+      }
       if (!current()) return;
-      const applied = !!(event && event.action !== 'none' && game.applyJerityAction(event));
+      const applied = !!(eligible && targetsAvailable(event) && event && event.action !== 'none' && game.applyJerityAction(event));
       actionAt = Date.now();
       broadcast(S2C.JERITY_RULING, { roundId, events: applied ? [event] : [], applied });
       broadcast(S2C.SNAP, game.snapshot());
       setPhase('effect');
-      for (const line of lines.filter(l => l.timing !== 'before_effect')) await speak(line);
+      // A target can die during the before line. Do not claim an effect that did not happen.
+      if (!event || event.action === 'none' || applied) {
+        for (const line of lines.filter(l => l.timing !== 'before_effect')) await speak(line);
+      }
     } catch (error) {
       if (current()) console.error('Jerity round exchange failed:', error.message);
     } finally {
@@ -136,6 +154,6 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
   return {
     start, submit, played, state,
     get busy() { return phase !== 'idle' && !abort.signal.aborted; },
-    cancel() { abort.abort(); recordings.clear(); },
+    cancel() { if (current()) setPhase('idle'); abort.abort(); recordings.clear(); },
   };
 }

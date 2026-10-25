@@ -20,7 +20,7 @@ export function unlockAudio() {
 addEventListener('pointerdown', unlockAudio, { capture: true });
 addEventListener('keydown', unlockAudio, { capture: true });
 
-export function playVoice({ url, audioBase64, text, fallback = false, timeoutMs = JERITY.PLAYBACK_TIMEOUT_MS, onSpeaking = () => {} }) {
+export function playVoice({ url, audioBase64, mimeType = 'audio/mpeg', text, fallback = false, timeoutMs = JERITY.PLAYBACK_TIMEOUT_MS, onSpeaking = () => {} }) {
   stopVoice();
   if (muted || (!audioBase64 && !url && !fallback) || missing.has(url)) return Promise.resolve();
   return new Promise(resolve => {
@@ -54,7 +54,7 @@ export function playVoice({ url, audioBase64, text, fallback = false, timeoutMs 
     speaker.onended = finish;
     speaker.onplaying = () => { unlocked = true; onSpeaking(true); };
     speaker.onerror = () => { if (url) missing.add(url); localSpeech(); };
-    speaker.src = url || `data:audio/mpeg;base64,${audioBase64}`;
+    speaker.src = url || `data:${mimeType};base64,${audioBase64}`;
     speaker.play().catch(error => {
       if (error.name === 'NotAllowedError') unlocked = false;
       localSpeech();

@@ -45,7 +45,7 @@ and Fish Audio model remain configured in `verity/verity.js` and
 Players opt in using **Enable mic** in the lobby or above the arena. After each
 countdown, Jerity cycles through the three listening invitations
 (`listening-1.mp3` / `listening-2.mp3` / `listening-3.mp3`, under four seconds each), then the server
-opens one shared 4.5-second listening window. Missing invitation clips stay silent.
+opens one shared six-second listening window. Missing invitation clips stay silent.
 A green halo
 means speak; a violet halo means Jerity is deciding. The microphone is released
 after capture, when disabled, on disconnect, and when leaving the game screen.
@@ -54,14 +54,19 @@ Permission denial or unsupported recording does not prevent playing.
 The server accepts one bounded recording per human player, allows 1.5 seconds
 for upload, transcribes the recordings together, and requests one AI action.
 It plays the before line, applies the action, publishes the resulting state,
-then plays the after line. Physics and the round timer wait until this exchange
-finishes, so temporary effects retain their full duration for driving.
+then plays the after line. Cars keep driving and the round clock keeps ticking
+throughout the invitation, recording, AI/TTS requests, and voice playback.
+Targets are checked again at application time: dead or disconnected players get
+no effect, and Jerity skips the success follow-up. A decided round cancels any
+pending requests or playback. Temporary effects start when actually applied.
 Each connected player's playback completion advances the exchange; a 15-second
 deadline prevents blocked audio or dropped clients from stalling the round.
 STT, AI, and TTS also have deadlines. Late results cannot affect another round.
 Jerity's personality persists through the match and resets for a new match.
 
-Dynamic lines use Fish Audio, with browser speech if audio generation fails.
+Dynamic lines use Fish Audio only. Failed voice generation is logged and shown as
+unavailable, rather than silently replacing Jerity with the browser's default voice.
+Voice generation is awaited, with a 25-second request deadline; gameplay continues.
 Landing/lobby greetings use only your MP3 recordings and stay silent while
 missing; see `client/public/audio/jerity/README.md`. Speech bubbles are removed.
 The face follows living cars, prioritizing the target of the current ruling.
@@ -70,6 +75,15 @@ visible while his eyes and mouth fade out. If his follow-up is still playing, he
 finishes it first. He faces the players again for the next round's invitation.
 Mute stays fixed in the bottom-right viewport corner on every screen.
 Sound/microphone controls have accessible labels and status announcements.
+
+In the lobby, open **Microphone & voice check**. **Test microphone** records six
+seconds and shows the private Groq transcript (or the actual failure category).
+**Play my recording** checks whether the microphone captured sound independently
+of Groq. **Test Jerity voice** requests a fixed phrase using the server's configured
+Fish Audio voice. Both tests require lobby membership and are rate limited.
+The voice uses `FISH_AUDIO_VOICE_ID`; `FISH_AUDIO_MODEL` optionally overrides the
+existing `s2.1-pro-free` model. Missing credentials must be set on Render, not only
+in a local `.env` or on Vercel.
 
 Action durations and HP amounts are clamped by `server/game.js`. `swap_positions`
 accepts the AI's two-ID target array. `remove_walls` disables interior obstacles
