@@ -88,7 +88,8 @@ export function mount(root, { net, playerId = null, lobby = null, countdown = nu
   const rotateEl = el.querySelector('.bb-overlay.rotate');
 
   const renderer = createRenderer(canvas, {
-    showHud: true, fx: params.get('fx') || 'full', fps: params.get('fps') === '1', corrupt: corruption,
+    showHud: true, fx: params.get('fx') || 'full', fps: params.get('fps') === '1',
+    corrupt: params.has('corrupt') ? () => Number(params.get('corrupt')) || 0 : corruption, // ?corrupt=0.9 previews a Verity stage
   });
   renderer.setMe(playerId);
   if (lobby) { renderer.setPlayers(lobby.players); renderer.setMap(lobby.map); }

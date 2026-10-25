@@ -12,6 +12,7 @@
 
 import { ARENA, CAR_SIZE, OBSTACLES, MAPS, DEFAULT_MAP, SPAWN_POINTS, SCALE, CARS, DEFAULT_CAR, PLAYER_COLORS } from '../../shared/constants.js';
 import { drawBumperCar, drawFlippedCar, drawObstacle } from './art.js';
+import { paintFloor, floorStyle, flickerSpots, BULBS, RAIL, FLOOR_MARGIN } from './floor.js';
 import { CAR_STATE, EVENT, BUFF, HIT_KIND } from '../../shared/protocol.js';
 import { CONFIG } from '../../shared/config.js';
 
@@ -40,7 +41,7 @@ const PAL_DEAD = {
 };
 const rgba = ([r, g, b, a]) => `rgba(${r | 0},${g | 0},${b | 0},${a.toFixed(3)})`;
 const toCss = (pal) => Object.fromEntries(Object.entries(pal).map(([k, v]) => [k, rgba(v)]));
-const DARK_CSS = { ...toCss(PAL_DARK), scan: 0, bleed: 0 };
+const DARK_CSS = { ...toCss(PAL_DARK), raw: PAL_DARK, scan: 0, bleed: 0 };
 const themeCache = new Map();
 /** Verity theme colors at corruption c (0..1), cached per 1% step. */
 function themePalette(c) {
@@ -49,7 +50,7 @@ function themePalette(c) {
     const t = step / 100, k = t * t * (3 - 2 * t); // ease: lingers cheerful, then turns
     const mixed = {};
     for (const key of Object.keys(PAL_CHEER)) mixed[key] = PAL_CHEER[key].map((v, i) => v + (PAL_DEAD[key][i] - v) * k);
-    themeCache.set(step, { ...toCss(mixed), scan: 0.05 + t * 0.16, bleed: t * 0.5 });
+    themeCache.set(step, { ...toCss(mixed), raw: mixed, scan: 0.05 + t * 0.16, bleed: t * 0.5 }); // raw: for floor.js
   }
   return themeCache.get(step);
 }
@@ -62,11 +63,15 @@ export function createRenderer(canvas, opts = {}) {
   const showFps = !!opts.fps;
   const themed = typeof opts.corrupt === 'function'; // Verity theme
   let obstacles = MAPS[DEFAULT_MAP]?.obstacles ?? OBSTACLES;
+  let mapId = DEFAULT_MAP;
+  let floor = null;        // floor.js picture: { key, canvas }, repainted when the map, palette step or size changes
+  let spots = flickerSpots(mapId);
+  let fontGen = 0;         // bumps when the emblem's font arrives, so the floor repaints with it
+  document.fonts?.load?.("700 30px Fredoka").then(() => { fontGen++; }, () => {});
   const obstacleHitAt = new Map(); // obstacle index -> time it was last hit (flash + wobble)
   const motion = new Map();        // car id -> { x, y, a, t, speed (m/s), turn (rad/s), squashAt, steer }
   const skids = [];                // tire marks: { x1, y1, x2, y2, life }
   let freezeUntil = 0, frozenView = null; // hit-stop on big hits involving you
-  let floorTex = null;             // rubber-mat speckle pattern
   let pal = DARK_CSS;
   let scanPattern = null; // CRT scanlines: one dark row every 3 px
   let bleedKey = '', bleedGrad = null;
@@ -399,10 +404,7 @@ export function createRenderer(canvas, opts = {}) {
     const sx = shake ? (Math.random() * 2 - 1) * shake : 0;
     const sy = shake ? (Math.random() * 2 - 1) * shake : 0;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox + sx), dpr * (oy + sy));
-    drawArena(view?.obstaclesDisabled);
-    drawSkids();
-
-    drawArena();
+    drawArena(view?.obstaclesDisabled, view?.timeLeft); // once (a merge had left a second, flag-less call)
     const cars = view?.cars || [];
     markMissedKos(cars, now);
     drawScars();
@@ -692,19 +694,62 @@ export function createRenderer(canvas, opts = {}) {
     }
   }
 
+  // The surround's hazard stripes: black and the rail's dash color, as one seamless tile with the
+  // glow baked in, repeated as a pattern. Rebuilt only when that color or the pixel size changes.
+  let hazard = null; // { key, pattern, period } in device pixels
+  function hazardPattern() {
+    const P = Math.max(8, Math.round(30 * dpr)), [r, g, b] = (pal.raw || PAL_DARK).dash;
+    const key = `${r | 0},${g | 0},${b | 0}|${P}`;
+    if (hazard?.key === key) return hazard;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = P;
+    const tc = cv.getContext('2d'), yellow = `rgb(${r | 0},${g | 0},${b | 0})`;
+    tc.fillStyle = '#17151b';
+    tc.fillRect(0, 0, P, P);
+    tc.fillStyle = yellow;
+    tc.shadowColor = yellow;
+    tc.shadowBlur = 7 * dpr;
+    for (let k = -1; k <= 2; k++) { // "/" bands where (x + y) mod P < P/2, drawn past the edges so the glow wraps seamlessly
+      const o = k * P;
+      tc.beginPath();
+      tc.moveTo(o, 0); tc.lineTo(o + P / 2, 0); tc.lineTo(o + P / 2 - P, P); tc.lineTo(o - P, P);
+      tc.closePath();
+      tc.fill();
+    }
+    hazard = { key, pattern: ctx.createPattern(cv, 'repeat'), period: P };
+    return hazard;
+  }
+
   /**
-   * The rink around the mat (screen space): diagonal stripes in the margins left and right of
-   * the arena on wide screens, a shadow under the mat so it sits above them, and a big faint
-   * JERITY sign down the side (both sides on the spectator screen; phones keep the right
-   * margin for the standings).
+   * The rink around the mat (screen space): glowing black-and-yellow hazard stripes all around
+   * the arena, creeping clockwise like the rail's dashes (up the left side, along the top, down
+   * the right, back along the bottom); a shadow under the mat so it sits above them; and a
+   * JERITY sign down the side on a dark plate (both sides on the spectator screen; phones keep
+   * the right margin for the standings).
    */
   function drawSurround() {
     const aw = ARENA.W * scale, ah = ARENA.H * scale;
-    ctx.strokeStyle = pal.grid;
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    for (let x = -cssH; x < cssW; x += 22) { ctx.moveTo(x, cssH); ctx.lineTo(x + cssH, 0); }
-    ctx.stroke();
+    const { pattern, period } = hazardPattern();
+    const off = ((lastNow / 1000) * 20 * dpr) % period;
+    const X0 = Math.round(ox * dpr), Y0 = Math.round(oy * dpr);
+    const X1 = Math.round((ox + aw) * dpr), Y1 = Math.round((oy + ah) * dpr);
+    const CW = canvas.width, CH = canvas.height;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = pattern;
+    for (const [x, y, w, h, dx, dy] of [
+      [0, 0, X0, CH, 0, -off],              // left side: up
+      [X0, 0, X1 - X0, Y0, off, 0],         // top: right
+      [X1, 0, CW - X1, CH, 0, off],         // right side: down
+      [X0, Y1, X1 - X0, CH - Y1, -off, 0],  // bottom: left
+    ]) {
+      if (w <= 0 || h <= 0) continue;
+      ctx.save();
+      ctx.translate(dx, dy); // moves the pattern; the rect stays put
+      ctx.fillRect(x - dx, y - dy, w, h);
+      ctx.restore();
+    }
+    ctx.restore();
 
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.45)';
@@ -715,18 +760,27 @@ export function createRenderer(canvas, opts = {}) {
     ctx.restore();
 
     if (ox < 48) return;
-    const size = Math.min(ox * 0.62, ah / 6);
+    const size = Math.min(ox * 0.5, ah / 8);
+    const [r, g, b] = (pal.raw || PAL_DARK).dash, yellow = `rgb(${r | 0},${g | 0},${b | 0})`;
     ctx.save();
     ctx.font = `700 ${size}px Fredoka, 'Trebuchet MS', system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = pal.text;
-    ctx.globalAlpha = 0.1;
+    const pw = ctx.measureText('JERITY').width + size * 0.9, ph = size * 1.35;
     for (const side of showHud ? [-1] : [-1, 1]) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.translate(side < 0 ? ox / 2 : cssW - ox / 2, cssH / 2);
       ctx.rotate(side * Math.PI / 2);
-      ctx.fillText('JERITY', 0, 0);
+      ctx.fillStyle = 'rgba(14,12,16,0.86)';
+      roundRect(-pw / 2, -ph / 2, pw, ph, ph * 0.3);
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = yellow;
+      glow(yellow, 8);
+      ctx.stroke();
+      ctx.fillStyle = yellow;
+      ctx.fillText('JERITY', 0, size * 0.05);
+      noGlow();
     }
     ctx.restore();
   }
@@ -797,36 +851,129 @@ export function createRenderer(canvas, opts = {}) {
     ctx.fillRect(0, 0, cssW, cssH);
   }
 
-  function drawArena(obstaclesDisabled = false) {
-    const { W, H } = ARENA;
-    ctx.fillStyle = pal.floor;
-    ctx.fillRect(0, 0, W, H);
-    // rubber-mat speckle
-    if (!floorTex) {
-      const tile = document.createElement('canvas');
-      tile.width = tile.height = 64;
-      const tc = tile.getContext('2d');
-      for (let i = 0; i < 140; i++) {
-        tc.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)';
-        tc.fillRect(Math.random() * 64, Math.random() * 64, 1.5, 1.5);
-      }
-      floorTex = ctx.createPattern(tile, 'repeat');
-    }
-    ctx.fillStyle = floorTex;
-    ctx.fillRect(0, 0, W, H);
+  /**
+   * The floor picture at device resolution, repainted only when the map, the palette (in 5%
+   * steps of Verity's darkness), the size or the emblem's font changes.
+   */
+  function floorLayer(c) {
+    const step = themed ? Math.round(c * 20) : -1;
+    const px = Math.min(3, scale * dpr);
+    const key = `${mapId}|${step}|${px.toFixed(3)}|${fontGen}`;
+    if (floor?.key === key) return floor.canvas;
+    const M = FLOOR_MARGIN, cv = floor?.canvas || document.createElement('canvas');
+    cv.width = Math.ceil((ARENA.W + 2 * M) * px);
+    cv.height = Math.ceil((ARENA.H + 2 * M) * px);
+    const fc = cv.getContext('2d');
+    fc.setTransform(px, 0, 0, px, M * px, M * px);
+    paintFloor(fc, { map: mapId, pal: themed ? themePalette(step / 20).raw : PAL_DARK, c: themed ? step / 20 : 0, px });
+    floor = { key, canvas: cv };
+    return cv;
+  }
 
-    // Grid with a slow wave of brightness rolling across it, so the floor never looks frozen.
-    ctx.strokeStyle = pal.grid;
-    ctx.lineWidth = 1;
+  /** A soft pool of light over the middle, drifting a little, darker toward the rail; late in Verity's arc it reddens and stutters. */
+  function drawSpotlight(t, c) {
+    const { W, H } = ARENA;
+    const cx = W / 2 + Math.sin(t * 0.13) * 60, cy = H / 2 + Math.cos(t * 0.17) * 30;
+    let light = 0.12;
+    if (c >= 0.75 && Math.sin(t * 9.1) * Math.sin(t * 3.7 + 1) < -0.2) light *= 0.3; // a dying light
+    const warm = c >= 0.5 ? '255,170,140' : '255,248,225';
+    const g = ctx.createRadialGradient(cx, cy, 20, cx, cy, 640);
+    g.addColorStop(0, `rgba(${warm},${light.toFixed(3)})`);
+    g.addColorStop(0.45, `rgba(${warm},0)`);
+    g.addColorStop(1, `rgba(0,0,0,${(0.22 + c * 0.12).toFixed(3)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  /** From halfway through Verity's arc, a few patches of floor flicker dark, like failing lights overhead. */
+  function drawFlicker(t, c) {
+    if (c < 0.5 || fx === 0) return;
+    const k = (c - 0.5) / 0.5;
+    for (const s of spots) {
+      if (Math.sin(t * 11 + s.phase) * Math.sin(t * 4.3 + s.phase * 2) < 0.25) continue; // lit most of the time
+      const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r);
+      g.addColorStop(0, `rgba(0,0,0,${(0.24 * k).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Marquee bulbs on the rail: a warm chase, a fast red chase in the last 10 seconds, everything
+  // flashing gold for the victory lap. Late in Verity's arc some bulbs are dead and others stutter.
+  const BULB_COLORS = { warm: [255, 226, 150], gold: [246, 185, 59], red: [255, 77, 77] };
+  const halos = {};
+  function haloSprite(mode) { // a soft glow, drawn once per color and stamped behind each lit bulb
+    if (!halos[mode]) {
+      const cv = document.createElement('canvas'), [r, g, b] = BULB_COLORS[mode];
+      cv.width = cv.height = 48;
+      const hc = cv.getContext('2d'), grad = hc.createRadialGradient(24, 24, 0, 24, 24, 24);
+      grad.addColorStop(0, `rgba(${r},${g},${b},0.95)`);
+      grad.addColorStop(0.35, `rgba(${r},${g},${b},0.45)`);
+      grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      hc.fillStyle = grad;
+      hc.fillRect(0, 0, 48, 48);
+      halos[mode] = cv;
+    }
+    return halos[mode];
+  }
+  const bulbNoise = (i) => (Math.imul(i + 1, 2654435761) >>> 0) / 4294967296; // fixed per bulb: which ones die
+
+  function drawRailLights(t, c, timeLeft) {
+    const { W, H } = ARENA;
+    // hazard dashes along the rail's inner half, creeping clockwise and glowing
+    ctx.setLineDash([24, 24]);
+    ctx.lineDashOffset = -t * 18;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = pal.dash;
+    glow(pal.dash, 9);
+    ctx.strokeRect(RAIL.DASH, RAIL.DASH, W - 2 * RAIL.DASH, H - 2 * RAIL.DASH);
+    noGlow();
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+
+    const hurry = !winnerId && typeof timeLeft === 'number' && timeLeft > 0 && timeLeft <= 10;
+    const mode = winnerId ? 'gold' : hurry ? 'red' : 'warm';
+    const step = Math.floor(t * (winnerId ? 4 : hurry ? 14 : 5));
+    const [r, g, b] = BULB_COLORS[mode];
+    const core = `rgb(${Math.min(255, r + 40)},${Math.min(255, g + 50)},${Math.min(255, b + 60)})`;
+    BULBS.forEach((p, i) => {
+      const dead = c > 0.5 && bulbNoise(i) < (c - 0.5) * 0.6;
+      let lit = !dead && (winnerId ? (i + step) % 2 === 0 : (i + step) % 3 === 0);
+      if (lit && c > 0.75 && Math.random() < 0.12) lit = false;
+      if (lit && fx > 0) ctx.drawImage(haloSprite(mode), p.x - 10, p.y - 10, 20, 20);
+      ctx.fillStyle = lit ? core : 'rgba(30,26,34,0.85)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, lit ? 2.9 : 2.3, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+
+  function drawArena(obstaclesDisabled = false, timeLeft = null) {
+    const { W, H } = ARENA;
     const t = lastNow / 1000;
-    for (let x = 50; x < W; x += 50) {
-      ctx.globalAlpha = 0.7 + 0.3 * Math.sin(x / 140 - t * 0.6);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    const c = themed ? Math.max(0, Math.min(1, opts.corrupt())) : 0;
+    const style = floorStyle(mapId, pal.raw || PAL_DARK);
+
+    // The floor picture (floor.js): the map's own floor, Verity's face, the ceiling mesh's
+    // shadow, start lines, wear and the rail, painted once and copied every frame.
+    const M = FLOOR_MARGIN;
+    ctx.drawImage(floorLayer(c), -M, -M, W + 2 * M, H + 2 * M);
+
+    // Grid with a slow wave of brightness rolling across it, where the floor has one.
+    if (style.grid) {
+      ctx.strokeStyle = style.grid.color;
+      ctx.lineWidth = 1;
+      for (let x = 50; x < W; x += 50) {
+        ctx.globalAlpha = style.grid.alpha * (0.7 + 0.3 * Math.sin(x / 140 - t * 0.6));
+        ctx.beginPath(); ctx.moveTo(x, RAIL.IN); ctx.lineTo(x, H - RAIL.IN); ctx.stroke();
+      }
+      for (let y = 50; y < H; y += 50) {
+        ctx.globalAlpha = style.grid.alpha * (0.7 + 0.3 * Math.sin(y / 110 + t * 0.45));
+        ctx.beginPath(); ctx.moveTo(RAIL.IN, y); ctx.lineTo(W - RAIL.IN, y); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
-    for (let y = 50; y < H; y += 50) {
-      ctx.globalAlpha = 0.7 + 0.3 * Math.sin(y / 110 + t * 0.45);
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
+    drawSpotlight(t, c);
+    drawFlicker(t, c);
     // Faint drifting specks, a slow far layer and a faster near one (parallax).
     if (!dust.length && fx > 0) {
       for (let i = 0; i < 36; i++) {
@@ -842,7 +989,7 @@ export function createRenderer(canvas, opts = {}) {
     ctx.globalAlpha = 1;
 
     // painted markings: center circle, and the dashed ring around it turning slowly
-    ctx.strokeStyle = pal.grid;
+    ctx.strokeStyle = style.ink;
     ctx.lineWidth = 6;
     ctx.beginPath(); ctx.arc(W / 2, H / 2, 70, 0, Math.PI * 2); ctx.stroke();
     ctx.lineWidth = 3;
@@ -856,7 +1003,7 @@ export function createRenderer(canvas, opts = {}) {
     const order = [...players.keys()];
     SPAWN_POINTS.forEach((s, i) => {
       ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI * 2);
-      if (!order[i]) { ctx.strokeStyle = pal.grid; ctx.lineWidth = 3; ctx.stroke(); return; } // nobody starts here
+      if (!order[i]) { ctx.strokeStyle = style.ink; ctx.lineWidth = 3; ctx.stroke(); return; } // nobody starts here
       const color = colorOf(order[i]);
       ctx.globalAlpha = 0.14;
       ctx.fillStyle = color;
@@ -870,23 +1017,7 @@ export function createRenderer(canvas, opts = {}) {
       ctx.globalAlpha = 1;
     });
 
-    // Walls: rubber bumper with hazard dashes creeping slowly around the rink, glowing
-    ctx.lineWidth = 8;
-    ctx.strokeStyle = pal.wall;
-    ctx.strokeRect(4, 4, W - 8, H - 8);
-    ctx.setLineDash([24, 24]);
-    ctx.lineDashOffset = -t * 18;
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = pal.dash;
-    glow(pal.dash, 9);
-    ctx.strokeRect(4, 4, W - 8, H - 8);
-    noGlow();
-    ctx.setLineDash([]);
-    ctx.lineDashOffset = 0;
-    // fence posts along the walls
-    ctx.fillStyle = pal.wall;
-    for (let x = 100; x < W; x += 100) { ctx.fillRect(x - 4, 0, 8, 10); ctx.fillRect(x - 4, H - 10, 8, 10); }
-    for (let y = 100; y < H; y += 100) { ctx.fillRect(0, y - 4, 10, 8); ctx.fillRect(W - 10, y - 4, 10, 8); }
+    drawRailLights(t, c, timeLeft);
 
     for (const o of obstacles) { // shadows first, so every obstacle stands up off the floor
       if (obstaclesDisabled) break;
@@ -1433,7 +1564,12 @@ export function createRenderer(canvas, opts = {}) {
     },
     setMe: (id) => { me = id; },
     /** Arena layout from the lobby (a key of MAPS). */
-    setMap: (id) => { obstacles = MAPS[id]?.obstacles ?? MAPS[DEFAULT_MAP]?.obstacles ?? OBSTACLES; obstacleHitAt.clear(); },
+    setMap: (id) => {
+      mapId = MAPS[id] ? id : DEFAULT_MAP;
+      obstacles = MAPS[mapId]?.obstacles ?? OBSTACLES;
+      spots = flickerSpots(mapId);
+      obstacleHitAt.clear();
+    },
     /** The victory lap's winner (gold ring and crown), or null. */
     setWinner: (id) => { winnerId = id || null; },
     setFx: (level) => { fx = FX_SCALE[level] ?? fx; },

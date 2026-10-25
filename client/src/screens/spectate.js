@@ -24,7 +24,8 @@ export function mount(root, { net, code, onError }) {
   root.append(el);
   renderQr(qr, joinUrl(code));
 
-  const renderer = createRenderer(canvas, { showHud: false, corrupt: corruption });
+  const preview = new URLSearchParams(location.search).get('corrupt'); // ?corrupt=0.9 previews a Verity stage
+  const renderer = createRenderer(canvas, { showHud: false, corrupt: preview !== null ? () => Number(preview) || 0 : corruption });
   // Verity announces the match on the big screen.
   const helper = h('div.spectate-verity');
   el.append(helper);
