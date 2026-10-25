@@ -23,7 +23,8 @@ const rooms = createRooms(io, {
     return 'Browser microphone test';
   },
   generateVoice: async () => cueAudio,
-  jerityLimits: { ...JERITY, LISTEN_MS: 1200, UPLOAD_GRACE_MS: 300 },
+  // Extra cooldown leaves time to inspect the four-second turn-away animation.
+  jerityLimits: { ...JERITY, LISTEN_MS: 1200, UPLOAD_GRACE_MS: 300, COOLDOWN_MIN_MS: 6000, COOLDOWN_MAX_MS: 6000 },
   pipelineFactory: () => ({ runCycle: async (_state, audios) => {
     captures.push(...audios);
     return { events: [{ action: 'boost_player', target: audios[0]?.playerId, params: { duration: 3 } }],
@@ -165,9 +166,12 @@ try {
   const away = await call('Page.captureScreenshot', { format: 'png' });
   await writeFile(awayScreenshot, Buffer.from(away.data, 'base64'));
   const code = await evaluate("location.pathname.split('/').pop()");
-  io.to(code).emit(S2C.JERITY_STATE, { roundId: 'next-browser-round', phase: 'inviting', turnAwayInMs: null });
-  await until("!document.querySelector('.bb-verity').classList.contains('v-away')");
+  await until("document.querySelector('.bb-verity')?.dataset.phase === 'listening'", 5000);
+  assert.equal(await evaluate("document.querySelector('.bb-verity').classList.contains('v-away')"), false);
   await until("getComputedStyle(document.querySelector('.bb-verity .v-eyes')).opacity === '1'");
+  await until("document.querySelector('.bb-verity')?.dataset.phase === 'idle'");
+  assert.equal(captures.length, 2, 'microphone records again in the same round');
+  assert.deepEqual(cueRequests, ['1', '2']);
   const playerId = [...io.sockets.sockets.values()].find(socket => socket.data.code === code).data.pid;
   await evaluate("document.documentElement.dataset.verityStage = '3'; document.documentElement.style.setProperty('--corrupt', '1')");
   io.to(code).emit(S2C.ROUND_END, { winnerId: playerId,
@@ -182,6 +186,8 @@ try {
   await until("!!document.querySelector('.spectate-verity')");
   await checkMute('spectate');
   // Simulate an old deployed server without Jerity's lobby field.
+  // Stop real exchanges so they cannot overwrite this deliberately missing state.
+  rooms.close();
   io.to(code).emit(S2C.LOBBY, { code, state: 'playing', players: [] });
   await until("document.querySelector('.spectate-verity .v-phase')?.textContent === 'Jerity unavailable'");
   io.to(code).emit(S2C.JERITY_STATE, { roundId: 'recovered', phase: 'listening', remainingMs: 1000 });

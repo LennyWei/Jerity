@@ -14,7 +14,7 @@ import { createGame } from './game.js';
 import { roundScore } from './mechanics.js';
 import { botInput } from './bots.js';
 import { VerityPipeline } from '../verity/verity-pipeline.js';
-import { createJerityRound } from './jerity-round.js';
+import { createJerityLoop } from './jerity-round.js';
 import { jerityStatus } from './jerity-status.js';
 import { transcribeAudio } from '../verity/verity-stt.js';
 import { speakVerity } from '../verity/verity-voice.js';
@@ -176,7 +176,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
     for (const p of room.players.values()) p.input = { ...NO_INPUT };
     room.game = createGame([...room.players.values()], room.map);
     const game = room.game;
-    room.jerity = createJerityRound({
+    room.jerity = createJerityLoop({
       game, pipeline: verityPipelines.get(room.code),
       roundNumber: room.match.round,
       ...(jerityLimits ? { limits: jerityLimits } : {}),

@@ -21,10 +21,16 @@ export function connectJerity({ net, face, playerId = null, initialState, onPhas
       const audio = await recordArgument(deadline - performance.now(), controller.signal);
       if (alive && !controller.signal.aborted && audio && net.connected !== false) {
         net.emit(C2S.JERITY_AUDIO, { roundId, ...audio }, result => {
-          if (alive && result?.error) face.microphoneError(result.error);
+          if (alive && !controller.signal.aborted && state?.roundId === roundId && result?.error) face.microphoneError(result.error);
         });
       }
-    } catch (error) { face.microphoneError(error.message); }
+    } catch (error) {
+      if (alive && !controller.signal.aborted && state?.roundId === roundId) face.microphoneError(error.message);
+    }
+  }
+  function endRound() {
+    recording?.abort(); stopVoice(); state = null; attempted = null; seenLines.clear();
+    face.setState({ phase: 'idle' }); onPhase('idle');
   }
   function receive(next) {
     if (!next || !alive) return;
@@ -58,8 +64,8 @@ export function connectJerity({ net, face, playerId = null, initialState, onPhas
       }
     }),
     net.on(S2C.JERITY_RULING, () => face.pulse()),
-    net.on(S2C.ROUND_END, () => { recording?.abort(); stopVoice(); face.setState({ phase: 'idle' }); }),
-    net.on(S2C.ROUND_DECIDED, () => { recording?.abort(); stopVoice(); face.setState({ phase: 'idle' }); }),
+    net.on(S2C.ROUND_END, endRound),
+    net.on(S2C.ROUND_DECIDED, endRound),
     onMicrophoneChange(() => { if (microphoneEnabled()) { attempted = null; void capture(); } }),
   ];
   if (net.onStatus) offs.push(net.onStatus(up => {

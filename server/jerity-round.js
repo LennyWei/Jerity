@@ -2,7 +2,47 @@ import { randomUUID } from 'node:crypto';
 import { JERITY, JERITY_AUDIO_TYPES, JERITY_LISTENING_CLIPS } from '../shared/jerity.js';
 import { S2C, CAR_STATE } from '../shared/protocol.js';
 
-// One exchange per round. The room owns the lifetime; late AI responses cannot affect a new game.
+// Repeat sequential exchanges until the room ends the round. Each exchange has a fresh
+// recording/playback ID, so delayed uploads and acknowledgments cannot reach the next one.
+export function createJerityLoop(options) {
+  const limits = options.limits || JERITY;
+  let cancelled = false, started = false, sequence = 0, cooldownTimer, finishCooldown;
+  const current = () => !cancelled && options.isCurrent();
+  const makeExchange = () => createJerityRound({ ...options, isCurrent: current,
+    roundNumber: (options.roundNumber || 1) + sequence++ });
+  let exchange = makeExchange();
+  return {
+    state: () => exchange.state(),
+    submit: (...args) => exchange.submit(...args),
+    played: (...args) => exchange.played(...args),
+    get busy() { return exchange.busy; },
+    async start() {
+      if (started || !current()) return;
+      started = true;
+      while (current()) {
+        await exchange.start();
+        if (!current()) break;
+        const duration = limits.COOLDOWN_MIN_MS +
+          Math.floor(Math.random() * (limits.COOLDOWN_MAX_MS - limits.COOLDOWN_MIN_MS + 1));
+        await new Promise(resolve => {
+          finishCooldown = resolve;
+          cooldownTimer = setTimeout(resolve, duration);
+        });
+        finishCooldown = null;
+        if (!current()) break;
+        exchange = makeExchange();
+      }
+    },
+    cancel() {
+      exchange.cancel();
+      cancelled = true;
+      clearTimeout(cooldownTimer);
+      finishCooldown?.();
+    },
+  };
+}
+
+// One exchange. The room owns the lifetime; late AI responses cannot affect a new game.
 export function createJerityRound({ game, pipeline, players, broadcast, isCurrent, roundNumber = 1, limits = JERITY }) {
   const roundId = randomUUID();
   const recordings = new Map();

@@ -5,7 +5,7 @@ import http from 'node:http';
 import { Server } from 'socket.io';
 import { io as connect } from 'socket.io-client';
 import { createGame } from '../server/game.js';
-import { createJerityRound } from '../server/jerity-round.js';
+import { createJerityRound, createJerityLoop } from '../server/jerity-round.js';
 import { createRooms } from '../server/rooms.js';
 import { VerityPipeline } from '../verity/verity-pipeline.js';
 import { C2S, S2C, BUFF } from '../shared/protocol.js';
@@ -36,6 +36,73 @@ const ruling = () => ({
   internalState: { mood: 'playful' },
   audioBuffers: [{ timing: 'before_effect', text: 'A boost for Alice.', audio: Buffer.from('mp3') },
     { timing: 'after_effect', text: 'Make it count.', audio: Buffer.from('mp3') }],
+});
+
+test('recurring exchanges use fresh IDs, reject old audio, and wait between exchanges', { timeout: 2000 }, async () => {
+  const ids = [], cues = [], idleTimes = [];
+  let calls = 0, loop;
+  loop = createJerityLoop({ game: createGame(roster), players: () => roster, isCurrent: () => true,
+    limits: { ...limits, COOLDOWN_MIN_MS: 30, COOLDOWN_MAX_MS: 50 },
+    pipeline: { runCycle: async () => { calls++; return ruling(); } },
+    broadcast(type, payload) {
+      if (type === S2C.JERITY_VOICE) {
+        if (payload.timing === 'listening_cue') cues.push(payload.url);
+        queueMicrotask(() => roster.forEach(p => loop.played(p.id, payload)));
+      }
+      if (type !== S2C.JERITY_STATE) return;
+      if (payload.phase === 'listening') {
+        if (ids.length) {
+          assert.ok(Date.now() - idleTimes.at(-1) >= 30);
+          assert.ok(loop.submit('a', { ...recording, roundId: ids.at(-1) }).error);
+        }
+        ids.push(payload.roundId);
+        assert.equal(loop.submit('a', { ...recording, roundId: payload.roundId }).ok, true);
+      }
+      if (payload.phase === 'idle') {
+        idleTimes.push(Date.now());
+        if (calls === 3) queueMicrotask(() => loop.cancel());
+      }
+    },
+  });
+  await loop.start();
+  assert.equal(calls, 3);
+  assert.equal(new Set(ids).size, 3);
+  assert.deepEqual(cues, ['/audio/jerity/listening-1.mp3', '/audio/jerity/listening-2.mp3', '/audio/jerity/listening-3.mp3']);
+});
+
+test('ending the round during cooldown cancels the next exchange immediately', { timeout: 1000 }, async () => {
+  let ready, calls = 0, loop;
+  const idle = new Promise(resolve => { ready = resolve; });
+  loop = createJerityLoop({ game: createGame(roster), players: () => [], isCurrent: () => true,
+    limits: { ...limits, LISTEN_CUE_TIMEOUT_MS: 1, COOLDOWN_MIN_MS: 4000, COOLDOWN_MAX_MS: 4000 },
+    pipeline: { runCycle: async () => { calls++; return { events: [], audioBuffers: [] }; } },
+    broadcast(type, payload) { if (type === S2C.JERITY_STATE && payload.phase === 'idle') ready(); },
+  });
+  const running = loop.start();
+  await idle;
+  await new Promise(resolve => setImmediate(resolve));
+  loop.cancel(); await running;
+  assert.equal(calls, 1);
+});
+
+test('ending the round during processing prevents late effects and further exchanges', { timeout: 1000 }, async () => {
+  let ready, finish, calls = 0;
+  const processing = new Promise(resolve => { ready = resolve; });
+  const game = createGame(roster), events = [];
+  const loop = createJerityLoop({ game, players: () => [], isCurrent: () => true,
+    limits: { ...limits, LISTEN_CUE_TIMEOUT_MS: 1, PIPELINE_TIMEOUT_MS: 60000 },
+    pipeline: { runCycle: () => { calls++; ready(); return new Promise(resolve => { finish = resolve; }); } },
+    broadcast: (type, payload) => events.push({ type, payload }),
+  });
+  const running = loop.start();
+  await processing;
+  loop.cancel(); await running;
+  const count = events.length;
+  finish(ruling());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(events.length, count);
+  assert.equal(calls, 1);
+  assert.equal(game.cars.get('a').buff, BUFF.NONE);
 });
 function setup({ pipeline, onEvent, customLimits, roundNumber = 1 } = {}) {
   const game = createGame(roster), events = [];

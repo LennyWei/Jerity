@@ -1,6 +1,8 @@
-// Shared limits for the round-opening voice exchange.
+// Shared limits for recurring voice exchanges during a round.
 export const JERITY = {
   LISTEN_MS: 6000,
+  COOLDOWN_MIN_MS: 1000,
+  COOLDOWN_MAX_MS: 4000,
   LISTEN_CUE_TIMEOUT_MS: 4000,
   TURN_AWAY_MS: 4000,
   UPLOAD_GRACE_MS: 1500,

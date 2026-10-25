@@ -59,6 +59,10 @@ throughout the invitation, recording, AI/TTS requests, and voice playback.
 Targets are checked again at application time: dead or disconnected players get
 no effect, and Jerity skips the success follow-up. A decided round cancels any
 pending requests or playback. Temporary effects start when actually applied.
+After each exchange finishes (including the after line), Jerity waits a random
+1–4 seconds, then invites players to speak again for six seconds. Exchanges never
+overlap. Each gets a new recording/playback ID, and ending the round cancels both
+the current exchange and its cooldown so no late effect or new invitation occurs.
 Each connected player's playback completion advances the exchange; a 15-second
 deadline prevents blocked audio or dropped clients from stalling the round.
 STT, AI, and TTS also have deadlines. Late results cannot affect another round.
@@ -72,7 +76,8 @@ missing; see `client/public/audio/jerity/README.md`. Speech bubbles are removed.
 The face follows living cars, prioritizing the target of the current ruling.
 Four seconds after the ruling takes effect, Jerity turns away: his head stays
 visible while his eyes and mouth fade out. If his follow-up is still playing, he
-finishes it first. He faces the players again for the next round's invitation.
+finishes it first. He faces the players again for the next exchange's invitation;
+a short cooldown may begin the next invitation before the turn-away animation.
 Mute stays fixed in the bottom-right viewport corner on every screen.
 Sound/microphone controls have accessible labels and status announcements.
 
