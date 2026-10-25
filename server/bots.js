@@ -36,10 +36,13 @@ export function botInput(game, bot) {
     aimY += ux * CONFIG.BOT_FLANK_DIST * SCALE;
   }
 
-  // Omni (DRIVE_MODE): tilt straight toward the aim point, up the screen = +throttle.
+  // Omni (DRIVE_MODE): tilt straight toward the aim point, up the screen = +throttle. Target
+  // behind: tilt gently so the car slows and turns tighter, or two bots just circle each other.
   if (CONFIG.DRIVE_MODE === 'omni') {
     const dx = aimX - me.x, dy = aimY - me.y, d = Math.hypot(dx, dy) || 1;
-    return { tilt: (dx / d) * CONFIG.BOT_TILT_MAX, throttle: (-dy / d) * CONFIG.BOT_TILT_MAX, taps: 0 };
+    const behind = Math.abs(wrapAngle(Math.atan2(dy, dx) - me.a)) > Math.PI / 2;
+    const k = CONFIG.BOT_TILT_MAX * (behind ? CONFIG.BOT_TURN_EASE : 1);
+    return { tilt: (dx / d) * k, throttle: (-dy / d) * k, taps: 0 };
   }
 
   // How far the aim point is off our nose (radians, positive = to the right), as tilt.

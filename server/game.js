@@ -33,6 +33,7 @@ export function createGame(players) {
   let now = 0;
   let timeLeft = CONFIG.ROUND_TIME_S;
   let lastSnapT = 0;
+  let clockBase = Date.now(); // snapshot times are this + simulation time
 
   buildArena();
   players.forEach((p, i) => addCar(p.id, SPAWN_POINTS[i % SPAWN_POINTS.length]));
@@ -56,8 +57,15 @@ export function createGame(players) {
   }
 
   function snapshot() {
+    // Stamp with simulation time, not the clock: snapshots go out every 50 ms but hold whole
+    // 33 ms ticks (1, then 2, then 1...), and clock stamps made clients play that back as a
+    // slow-fast stutter. But the simulation stands still in the countdown (and drops time after
+    // a stall), so when it falls behind the clock, move the base up: stamps far behind the clock
+    // make clients draw past the newest snapshot (jumpy) and slowly drift back (laggy).
+    const wall = Date.now();
+    if (wall - (clockBase + now) > CONFIG.SNAP_CLOCK_SLACK_MS) clockBase = wall - now;
     // Clients order snapshots by t and drop any that go backwards, so never repeat one.
-    lastSnapT = Math.max(Date.now(), lastSnapT + 1);
+    lastSnapT = Math.max(clockBase + Math.round(now), lastSnapT + 1);
     return {
       t: lastSnapT,
       cars: [...cars.values()].map(c => packCar({ ...c, sc: liveScore(stats.get(c.id)) })),
@@ -324,16 +332,26 @@ export function createGame(players) {
 
     if (want > 0) {
       b.setLinearDamping(0);
-      // Split the velocity along where you tilt and across it. Along: speed up (or brake) toward
-      // the target speed at OMNI_ACCEL, so it still has weight. Across: sliding the old way is
-      // killed at OMNI_GRIP, much faster, so turns respond quickly instead of gliding.
-      const ux = wx / Math.hypot(wx, wy), uy = wy / Math.hypot(wx, wy);
-      const along = v.x * ux + v.y * uy;
-      const sideX = v.x - along * ux, sideY = v.y - along * uy, side = Math.hypot(sideX, sideY);
       const accel = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
-      const dAlong = Math.max(-accel, Math.min(accel, maxSpeed * want - along));
-      const dSide = side > 0 ? Math.min(side, CONFIG.OMNI_GRIP * dt) / side : 0;
-      b.applyLinearImpulse(Vec2((ux * dAlong - sideX * dSide) * mass, (uy * dAlong - sideY * dSide) * mass), b.getWorldCenter());
+      const target = maxSpeed * want;
+      const s = v.length();
+      let nvx, nvy;
+      if (s < CONFIG.OMNI_ARC_MIN_SPEED) {
+        // Nearly still: no direction to swing yet, so push straight toward the target velocity.
+        const k = target / Math.hypot(wx, wy);
+        const dvx = wx * k - v.x, dvy = wy * k - v.y, dv = Math.hypot(dvx, dvy);
+        const f = dv > accel ? accel / dv : 1;
+        nvx = v.x + dvx * f; nvy = v.y + dvy * f;
+      } else {
+        // Moving: swing the direction of travel toward the tilt in an arc, keeping the speed, so a
+        // turn is a curve instead of braking and re-accelerating. Fast while far off, easing in.
+        const h = Math.atan2(v.y, v.x);
+        const d = Math.atan2(Math.sin(Math.atan2(wy, wx) - h), Math.cos(Math.atan2(wy, wx) - h));
+        const turn = Math.max(-CONFIG.OMNI_TURN_RATE, Math.min(CONFIG.OMNI_TURN_RATE, d * CONFIG.OMNI_TURN_GAIN)) * dt;
+        const ns = s + Math.max(-accel, Math.min(accel, target - s));
+        nvx = Math.cos(h + turn) * ns; nvy = Math.sin(h + turn) * ns;
+      }
+      b.applyLinearImpulse(Vec2((nvx - v.x) * mass, (nvy - v.y) * mass), b.getWorldCenter());
     } else {
       b.setLinearDamping(CONFIG.OMNI_COAST_DAMPING); // no tilt (or knocked back): roll to a stop
     }

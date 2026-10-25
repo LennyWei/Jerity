@@ -432,9 +432,11 @@ const degBetween = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b
   // Steering: going right at top speed, tilt up the screen. How long until it is heading up?
   const { game, cars: [car] } = setup({ x: 20, y: 20, v: spec.maxSpeed }); // swings up through the open middle
   const ticks = run(game, [tiltTo(0, -1)], 3 * CONFIG.TICK_HZ, () => degBetween(angleOf(car), -Math.PI / 2) <= 5);
-  // The old sideways speed dies at OMNI_GRIP while the new way builds at OMNI_ACCEL; done once
-  // the travel is within 5 degrees, plus the nose catching up (about 1 / OMNI_FACE_GAIN).
-  const turnTime = spec.maxSpeed / (CONFIG.OMNI_GRIP + CONFIG.OMNI_ACCEL * Math.tan(5 * Math.PI / 180)) + 1 / CONFIG.OMNI_FACE_GAIN;
+  // The travel swings at OMNI_TURN_RATE until it is within OMNI_TURN_RATE / OMNI_TURN_GAIN rad,
+  // then eases in exponentially to 5 degrees; plus the nose catching up (about 1 / OMNI_FACE_GAIN).
+  const easeFrom = CONFIG.OMNI_TURN_RATE / CONFIG.OMNI_TURN_GAIN, five = 5 * Math.PI / 180;
+  const turnTime = (Math.PI / 2 - easeFrom) / CONFIG.OMNI_TURN_RATE
+    + Math.log(easeFrom / five) / CONFIG.OMNI_TURN_GAIN + 1 / CONFIG.OMNI_FACE_GAIN;
   near('90 degree turn at top speed: time', ticks * dt, turnTime, 0.1, 's');
 }
 {

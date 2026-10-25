@@ -6,15 +6,18 @@
 export const CONFIG = {
   // Loop
   TICK_HZ: 30,
-  SNAP_HZ: 20,
+  SNAP_HZ: 30,           // = TICK_HZ: every tick goes out, sent right after it (rooms.js)
   INPUT_HZ: 30,
-  INTERP_DELAY_MS: 150,  // 3 snapshots at 20 Hz; 100 jittered (build plan fix, Person 2)
+  INTERP_DELAY_MS: 100,  // 3 snapshots at 30 Hz (was 150 at 20 Hz; 100 at 20 Hz jittered: Person 2)
+  SNAP_CLOCK_SLACK_MS: 150, // snapshot stamps follow simulation time; if it falls this far behind the clock (countdown, stall), they catch up
 
   // Driving mode. 'omni': tilt the phone the way you want to go on screen (like a marble on a
   // tray); the car's nose turns to face where it is going. 'car': roll steers, tip drives.
   DRIVE_MODE: 'omni',
-  OMNI_ACCEL: 20,         // m/s^2: speeding up (or braking) along where you tilt: the weight
-  OMNI_GRIP: 45,          // m/s^2: sliding across where you tilt dies this fast: how quickly turns respond
+  OMNI_ACCEL: 16,         // m/s^2: speeding up (or braking) toward the speed your tilt asks for: the weight
+  OMNI_TURN_RATE: 6,      // rad/s: fastest the direction of travel swings toward the tilt (a turn is an arc at full speed)
+  OMNI_TURN_GAIN: 10,     // ...and how it eases in: swing rate = this * angle still to go, up to OMNI_TURN_RATE
+  OMNI_ARC_MIN_SPEED: 1.5, // m/s: below this there is no direction to swing, so tilt pushes straight that way
   OMNI_COAST_DAMPING: 3.5, // friction with the phone level: rolls to a stop instead of gliding (half speed every 0.2 s)
   OMNI_FACE_GAIN: 14,     // how quickly the nose turns to face the direction of travel
   OMNI_FLIP_ANGLE_DEG: 60, // omni tip-over: yanking at least this far off your direction of travel...
@@ -92,6 +95,7 @@ export const CONFIG = {
   BOT_TILT_MAX: 0.7,     // below FLIP_TILT, so bots never tip over
   BOT_STEER_GAIN: 2,     // tilt per radian off target (full lock at 20 degrees off)
   BOT_FLANK_DIST: 4,     // m: when the target faces the bot, aim this far beside it (swing into its side, not a head-on)
+  BOT_TURN_EASE: 0.3,    // omni bots tilt this fraction as hard while the target is behind them: slow down to turn around
 
   // Phone tilt. Measured as how far the phone's long edge tilts from level, which works for
   // a steering-wheel grip and a flat controller grip alike (see wheelAngle in input.js).

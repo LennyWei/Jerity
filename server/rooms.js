@@ -222,8 +222,11 @@ export function createRooms(io) {
   }
 
   // Fixed timestep: the accumulator keeps the simulation at TICK_HZ even when setInterval runs late.
+  // Snapshots go out from the same loop, right after a tick, SNAP_HZ times a second: a separate
+  // timer drifts against this one and sends 0 ticks, then 2.
   let last = performance.now();
   let acc = 0;
+  let snapAcc = 0;
   setInterval(() => {
     const t = performance.now();
     acc = Math.min(acc + t - last, STEP_MS * MAX_CATCHUP_TICKS);
@@ -231,15 +234,15 @@ export function createRooms(io) {
     while (acc >= STEP_MS) {
       acc -= STEP_MS;
       for (const room of rooms.values()) guard(room, () => tickRoom(room, 1 / CONFIG.TICK_HZ));
+      snapAcc += CONFIG.SNAP_HZ / CONFIG.TICK_HZ;
+      if (snapAcc < 1) continue;
+      snapAcc -= 1;
+      for (const room of rooms.values()) {
+        if (room.state !== ROOM_STATE.PLAYING && room.state !== ROOM_STATE.COUNTDOWN) continue;
+        guard(room, () => io.to(room.code).emit(S2C.SNAP, room.game.snapshot()));
+      }
     }
   }, STEP_MS);
-
-  setInterval(() => {
-    for (const room of rooms.values()) {
-      if (room.state !== ROOM_STATE.PLAYING && room.state !== ROOM_STATE.COUNTDOWN) continue;
-      guard(room, () => io.to(room.code).emit(S2C.SNAP, room.game.snapshot()));
-    }
-  }, 1000 / CONFIG.SNAP_HZ);
 
   // ---------------------------------------------------------------------------
   // Sockets
