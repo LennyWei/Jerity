@@ -1,0 +1,9 @@
+{
+  "name": "Bumper Brawl",
+  "short_name": "Bumper Brawl",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12"
+}

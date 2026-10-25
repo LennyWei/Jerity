@@ -10,13 +10,18 @@
 
 // Client -> server
 export const C2S = {
-  CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId } | { error }
-  JOIN_ROOM:   'joinRoom',   // { code, name }             ack -> { playerId } | { error }
+  CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId, rejoinKey } | { error }
+  JOIN_ROOM:   'joinRoom',   // { code, name, playerId?, rejoinKey? }  ack -> { playerId, rejoinKey } | { error }
+                             //   playerId + rejoinKey (from your earlier ack): rejoin as that player after a
+                             //   dropped connection, same car, even mid-round
   SPECTATE:    'spectate',   // { code }                   ack -> { ok } | { error }
   READY:       'ready',      // { ready }
   START:       'start',      // {}                         host only, ack -> { ok } | { error }
-  INPUT:       'input',      // { seq, tilt, accel, taps } 30 Hz while playing
+  INPUT:       'input',      // { seq, tilt, throttle, accel, taps } 30 Hz while playing
   LEAVE:       'leave',      // {}
+  LIST_ROOMS:  'listRooms',  // {}                         ack -> { rooms: RoomInfo[] } (home screen list)
+  ADD_BOT:     'addBot',     // {}                         host only, in the lobby, ack -> { ok } | { error }
+  REMOVE_BOT:  'removeBot',  // {}                         host only, in the lobby: removes the newest bot
 };
 
 // Server -> client
@@ -45,6 +50,7 @@ export const CAR_STATE = {
   FLIPPED: 1,  // tipped over: no control until RECOVER_TAPS taps
   DEAD: 2,
   STUNNED: 3,  // concussed after a head-on hit: no control for CONCUSSION_MS
+  DISCONNECTED: 4, // phone dropped: a frozen ghost (nothing hits it) until it rejoins or DISCONNECT_GRACE_MS
 };
 
 // Buff from getting a kill (snapshot field `buff`)
@@ -55,7 +61,8 @@ export const HIT_KIND = { SIDE: 'side', REAR: 'rear' };
 
 export const EVENT = {
   HIT: 'hit',         // { attacker, victim, dmg, kind }        nose into side or rear
-  HEADON: 'headon',   // { a, b, dmg, stunMs }                  both take dmg, both stunned
+  HEADON: 'headon',   // { a, b, dmg, dmgA?, dmgB?, stunMs }    both stunned; dmgA/dmgB: what each took
+                      //                                        (each from the other's speed); dmg: the larger
   WALL: 'wall',       // { id, dmg }                            wall or obstacle self-damage
   FLIP: 'flip',       // { id }
   RECOVER: 'recover', // { id }
@@ -70,7 +77,9 @@ export const EVENT = {
  * @typedef {Object} Input            phone -> server, 30 Hz
  * @property {number} seq             increments every send
  * @property {number} tilt            -1 (full left) .. 1 (full right), already calibrated
- * @property {boolean} accel          ACCEL button held
+ * @property {number} [throttle]      -1 (full reverse) .. 1 (full forward), from tilting the phone
+ *                                    forward/back. Optional: without it, accel means full forward.
+ * @property {boolean} accel          driving forward (throttle > 0); kept for bots and older clients
  * @property {number} taps            taps since the previous Input (NOT a boolean); used to recover from a flip
  */
 
@@ -80,6 +89,20 @@ export const EVENT = {
  * @property {string} name
  * @property {number} color           index into PLAYER_COLORS, unique in the room
  * @property {boolean} ready
+ * @property {boolean} [bot]           a server bot (hosts can add / remove them in the lobby)
+ */
+
+/**
+ * @typedef {Object} RoomInfo          one row of the home screen's open-rooms list
+ * @property {string} code
+ * @property {string} host             host's name ('' if none)
+ * @property {number} players          including bots
+ * @property {number} humans
+ * @property {number} max              MAX_PLAYERS
+ * @property {string} state            one of ROOM_STATE
+ * @property {boolean} joinable        not full, and in the lobby (or a practice room, which takes
+ *                                     players mid-round)
+ * @property {boolean} [practice]      the always-on TEST room
  */
 
 /**
@@ -134,10 +157,13 @@ export const EVENT = {
 export function sanitizeInput(raw) {
   const tilt = Number(raw?.tilt);
   const taps = Math.floor(Number(raw?.taps));
+  const thr = Number(raw?.throttle);
+  const throttle = Number.isFinite(thr) ? Math.max(-1, Math.min(1, thr)) : raw?.accel ? 1 : 0;
   return {
     seq: Number(raw?.seq) || 0,
     tilt: Number.isFinite(tilt) ? Math.max(-1, Math.min(1, tilt)) : 0,
-    accel: !!raw?.accel,
+    throttle,
+    accel: throttle > 0,
     taps: Number.isFinite(taps) ? Math.max(0, Math.min(20, taps)) : 0,
   };
 }
