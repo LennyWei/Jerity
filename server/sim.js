@@ -90,7 +90,7 @@ console.log('Driving (design.md section 4)');
 }
 {
   // Regression: a car steering from rest used to stay stuck at MIN_SPEED.
-  const { game, cars: [car] } = setup({ x: 40, y: 6 }); // spirals inside x 34-43, y 4-12
+  const { game, cars: [car] } = setup({ x: 42, y: 15 }); // spirals inside x 36-48, y 15-26, clear of pillars
   run(game, [{ tilt: 0.8, accel: true, taps: 0 }], 2 * CONFIG.TICK_HZ);
   near('turning from rest (tilt 0.8): speed at 2 s', speed(car), spec.maxSpeed, 1, 'm/s');
 }
@@ -272,6 +272,19 @@ const fwdSpeed = car => Vec2.dot(car.body.getWorldVector(Vec2(1, 0)), car.body.g
     dist() - d0 >= 1, `${dist() - d0} m`);
 }
 {
+  // While knocked back nothing the player does counts: full forward and full tilt can't resist the
+  // push (full tilt alone would turn it ~90 degrees in that time), and a small spin leaves it facing a bit off.
+  const { game, cars: [a] } = setup({ x: 28.35, y: 10, v: 10 }, { x: 30, y: 10, a: NORTH });
+  const HOLD = { tilt: 1, accel: true, taps: 0 };
+  run(game, [HOLD, COAST], CONFIG.TICK_HZ, () => game.snapshot().events.some(e => e.type === EVENT.HIT));
+  const a0 = a.body.getAngle();
+  let pushedBack = true;
+  run(game, [HOLD, COAST], Math.round(CONFIG.KNOCKBACK_MS / 1000 / dt) - 1, () => { if (fwdSpeed(a) > 0) pushedBack = false; });
+  const spun = Math.abs(a.body.getAngle() - a0) * 180 / Math.PI;
+  check(`knocked back for ${CONFIG.KNOCKBACK_MS} ms: holding forward can't resist it`, pushedBack, `${fwdSpeed(a)} m/s`);
+  check(`...and it spins a little (${spun.toFixed(0)} deg), steering ignored`, spun >= 5 && spun <= 45, `${spun} deg`);
+}
+{
   // Both drive at each other from rest and concuss. After the stun, a short steer right each
   // and they get past each other. Along the open middle of the arena (y = 15 m).
   const { game, cars: [a, b] } = setup({ x: 20, y: 15 }, { x: 30, y: 15, a: Math.PI });
@@ -413,7 +426,18 @@ const degBetween = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b
 {
   const { game, cars: [car] } = setup({ x: 8, y: 15, v: spec.maxSpeed });
   const half = run(game, [tiltTo(0, 0)], 4 * CONFIG.TICK_HZ, () => speed(car) <= spec.maxSpeed / 2);
-  near('no tilt: coasting to half speed', half * dt, Math.LN2 / CONFIG.COAST_DAMPING, 0.05, 's');
+  near('no tilt: coasting to half speed', half * dt, Math.LN2 / CONFIG.OMNI_COAST_DAMPING, 0.05, 's');
+}
+{
+  // Steering: going right at top speed, tilt up the screen. How long until it is heading up?
+  const { game, cars: [car] } = setup({ x: 20, y: 20, v: spec.maxSpeed }); // swings up through the open middle
+  const ticks = run(game, [tiltTo(0, -1)], 3 * CONFIG.TICK_HZ, () => degBetween(angleOf(car), -Math.PI / 2) <= 5);
+  // The travel swings at OMNI_TURN_RATE until it is within OMNI_TURN_RATE / OMNI_TURN_GAIN rad,
+  // then eases in exponentially to 5 degrees; plus the nose catching up (about 1 / OMNI_FACE_GAIN).
+  const easeFrom = CONFIG.OMNI_TURN_RATE / CONFIG.OMNI_TURN_GAIN, five = 5 * Math.PI / 180;
+  const turnTime = (Math.PI / 2 - easeFrom) / CONFIG.OMNI_TURN_RATE
+    + Math.log(easeFrom / five) / CONFIG.OMNI_TURN_GAIN + 1 / CONFIG.OMNI_FACE_GAIN;
+  near('90 degree turn at top speed: time', ticks * dt, turnTime, 0.1, 's');
 }
 {
   // At top speed going right, yank the phone the other way. Omni tips over only if that is held

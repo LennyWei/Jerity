@@ -6,15 +6,20 @@
 export const CONFIG = {
   // Loop
   TICK_HZ: 30,
-  SNAP_HZ: 20,
+  SNAP_HZ: 30,           // = TICK_HZ: every tick goes out, sent right after it (rooms.js)
   INPUT_HZ: 30,
-  INTERP_DELAY_MS: 150,  // 3 snapshots at 20 Hz; 100 jittered (build plan fix, Person 2)
+  INTERP_DELAY_MS: 100,  // 3 snapshots at 30 Hz (was 150 at 20 Hz; 100 at 20 Hz jittered: Person 2)
+  SNAP_CLOCK_SLACK_MS: 150, // snapshot stamps follow simulation time; if it falls this far behind the clock (countdown, stall), they catch up
 
   // Driving mode. 'omni': tilt the phone the way you want to go on screen (like a marble on a
   // tray); the car's nose turns to face where it is going. 'car': roll steers, tip drives.
   DRIVE_MODE: 'omni',
-  OMNI_ACCEL: 9,          // m/s^2: how fast the car's velocity swings to where you tilt (weight)
-  OMNI_FACE_GAIN: 8,      // how quickly the nose turns to face the direction of travel
+  OMNI_ACCEL: 16,         // m/s^2: speeding up (or braking) toward the speed your tilt asks for: the weight
+  OMNI_TURN_RATE: 6,      // rad/s: fastest the direction of travel swings toward the tilt (a turn is an arc at full speed)
+  OMNI_TURN_GAIN: 10,     // ...and how it eases in: swing rate = this * angle still to go, up to OMNI_TURN_RATE
+  OMNI_ARC_MIN_SPEED: 1.5, // m/s: below this there is no direction to swing, so tilt pushes straight that way
+  OMNI_COAST_DAMPING: 3.5, // friction with the phone level: rolls to a stop instead of gliding (half speed every 0.2 s)
+  OMNI_FACE_GAIN: 14,     // how quickly the nose turns to face the direction of travel
   OMNI_FLIP_ANGLE_DEG: 60, // omni tip-over: yanking at least this far off your direction of travel...
   OMNI_FLIP_SPEED_FRAC: 0.7, // ...while above this fraction of top speed (swinging bleeds speed, so lower than FLIP_SPEED_FRAC)
   OMNI_TILT_DEG: 18,      // phone tilt (from the calibrated grip) for full speed in that direction
@@ -49,7 +54,8 @@ export const CONFIG = {
   // throttle and grip for a moment, so they separate instead of grinding or sliding along each other.
   KNOCKBACK_SPEED: 5,         // m/s apart for each car after a side or rear hit
   HEADON_KNOCKBACK_SPEED: 8,  // m/s apart after a head-on: far enough to steer past each other after the stun
-  KNOCKBACK_MS: 300,          // no throttle or grip for this long after a knockback (steering still works)
+  KNOCKBACK_MS: 300,          // no control at all (throttle, grip, steering) for this long after a knockback
+  KNOCKBACK_SPIN: 1.3,        // rad/s spin from a knockback; dies out at ANGULAR_DAMPING (about 25 deg in all)
 
   // Tip-over (greedy full speed + full steering)
   FLIP_SPEED_FRAC: 0.95, // at (nearly) full speed: at or above this fraction of max speed...
@@ -63,6 +69,7 @@ export const CONFIG = {
   WALL_RESTITUTION: 0.3,
   OBSTACLE_RESTITUTION: 0.8,
   WALL_MIN_SPEED: 5,     // slower touches are free (above the 4 m/s launch, so pressing on a wall costs nothing)
+  WALL_PRESS_MS: 1000,   // a bump this soon after the car's last wall bump is pressing against it, not a crash: no HP
   WALL_KNOCKBACK_SPEED: 2, // m/s off a wall or pillar after any bump of MIN_IMPACT_SPEED or more, so holding accel bounces instead of grinding
   WALL_SPEED_KEEP: 0.35, // keep 35% of speed after a hit
   WALL_DMG_K: 0.08,      // self-damage = WALL_DMG_K * impactSpeed^2 (about 16 HP at full speed)
@@ -88,6 +95,7 @@ export const CONFIG = {
   BOT_TILT_MAX: 0.7,     // below FLIP_TILT, so bots never tip over
   BOT_STEER_GAIN: 2,     // tilt per radian off target (full lock at 20 degrees off)
   BOT_FLANK_DIST: 4,     // m: when the target faces the bot, aim this far beside it (swing into its side, not a head-on)
+  BOT_TURN_EASE: 0.3,    // omni bots tilt this fraction as hard while the target is behind them: slow down to turn around
 
   // Phone tilt. Measured as how far the phone's long edge tilts from level, which works for
   // a steering-wheel grip and a flat controller grip alike (see wheelAngle in input.js).

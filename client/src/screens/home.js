@@ -5,6 +5,8 @@
 //   mount(root, { net, code, error, onCreate(name, bots), onJoin(name, code) }) -> unmount
 
 import { h, store } from '../ui.js';
+import { mountVerity, LINES } from '../verity-ui.js';
+import { mountMenuCars } from '../menu-cars.js';
 import { C2S, CODE_LENGTH, CODE_ALPHABET, ROOM_STATE } from '../../../shared/protocol.js';
 import { NAME_MAX, MAX_PLAYERS } from '../../../shared/constants.js';
 
@@ -89,9 +91,13 @@ export function mount(root, { net, code = '', error = '', onCreate, onJoin }) {
   };
   refresh();
 
-  const el = h('div.screen.center', {},
-    h('h1.brand', {}, 'Bumper ', h('span', {}, 'Brawl')),
+  const helper = h('div');
+  const rink = h('canvas.menu-rink', { 'aria-hidden': 'true' });
+  const el = h('div.screen.center.crt', {},
+    h('h1.brand', {}, 'JER', h('span', {}, 'ITY')),
+    rink,
     h('p.tagline', {}, 'Tilt to steer. Ram their side. Last car standing wins.'),
+    helper,
     h('div.stack', {},
       name,
       h('div.row', {}, codeEl, join),
@@ -106,6 +112,8 @@ export function mount(root, { net, code = '', error = '', onCreate, onJoin }) {
       h('p.muted', { style: { textAlign: 'center' } }, 'Phones need motion access: allow it when asked.'),
     ));
   root.append(el);
+  const verity = mountVerity(helper, { lines: LINES.home, name: () => name.value.trim() });
+  const stopRink = mountMenuCars(rink);
   (code ? name.value ? join : name : name).focus?.();
-  return () => { alive = false; clearTimeout(timer); el.remove(); };
+  return () => { alive = false; clearTimeout(timer); verity.destroy(); stopRink(); el.remove(); };
 }

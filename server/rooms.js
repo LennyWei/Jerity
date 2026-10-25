@@ -8,7 +8,7 @@
 import {
   C2S, S2C, ROOM_STATE, sanitizeInput, CODE_ALPHABET, CODE_LENGTH,
 } from '../shared/protocol.js';
-import { MIN_PLAYERS, MAX_PLAYERS, NAME_MAX } from '../shared/constants.js';
+import { MIN_PLAYERS, MAX_PLAYERS, NAME_MAX, MAPS, DEFAULT_MAP } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { createGame } from './game.js';
 import { liveScore } from './mechanics.js';
@@ -42,6 +42,7 @@ export function createRooms(io) {
   function newRoom(code, hostId, devRoom = false) {
     const room = {
       code, hostId, devRoom,
+      map: DEFAULT_MAP,
       state: ROOM_STATE.LOBBY,
       players: new Map(), // id -> player, in join order (the oldest human inherits host)
       game: null,         // set from countdown to the end of the results screen
@@ -82,6 +83,7 @@ export function createRooms(io) {
     return {
       code: room.code,
       hostId: room.hostId,
+      map: room.map,
       state: room.state,
       players: [...room.players.values()].map(p => ({
         id: p.id, name: p.name, color: p.color, ready: p.ready, ...(p.isBot ? { bot: true } : {}),
@@ -144,7 +146,7 @@ export function createRooms(io) {
     clearTimers(room);
     room.state = ROOM_STATE.COUNTDOWN;
     for (const p of room.players.values()) p.input = { ...NO_INPUT };
-    room.game = createGame([...room.players.values()]);
+    room.game = createGame([...room.players.values()], room.map);
     for (const p of room.players.values()) if (p.away) room.game.setAway(p.id, true); // still rejoining
     broadcastLobby(room);
 
@@ -222,8 +224,11 @@ export function createRooms(io) {
   }
 
   // Fixed timestep: the accumulator keeps the simulation at TICK_HZ even when setInterval runs late.
+  // Snapshots go out from the same loop, right after a tick, SNAP_HZ times a second: a separate
+  // timer drifts against this one and sends 0 ticks, then 2.
   let last = performance.now();
   let acc = 0;
+  let snapAcc = 0;
   setInterval(() => {
     const t = performance.now();
     acc = Math.min(acc + t - last, STEP_MS * MAX_CATCHUP_TICKS);
@@ -231,15 +236,15 @@ export function createRooms(io) {
     while (acc >= STEP_MS) {
       acc -= STEP_MS;
       for (const room of rooms.values()) guard(room, () => tickRoom(room, 1 / CONFIG.TICK_HZ));
+      snapAcc += CONFIG.SNAP_HZ / CONFIG.TICK_HZ;
+      if (snapAcc < 1) continue;
+      snapAcc -= 1;
+      for (const room of rooms.values()) {
+        if (room.state !== ROOM_STATE.PLAYING && room.state !== ROOM_STATE.COUNTDOWN) continue;
+        guard(room, () => io.to(room.code).emit(S2C.SNAP, room.game.snapshot()));
+      }
     }
   }, STEP_MS);
-
-  setInterval(() => {
-    for (const room of rooms.values()) {
-      if (room.state !== ROOM_STATE.PLAYING && room.state !== ROOM_STATE.COUNTDOWN) continue;
-      guard(room, () => io.to(room.code).emit(S2C.SNAP, room.game.snapshot()));
-    }
-  }, 1000 / CONFIG.SNAP_HZ);
 
   // ---------------------------------------------------------------------------
   // Sockets
@@ -383,6 +388,14 @@ export function createRooms(io) {
       if (room.players.size >= MAX_PLAYERS) return ack({ error: 'Room is full' });
       const n = [...room.players.values()].filter(p => p.isBot).length + 1;
       addPlayer(room, `bot${botSeq++}`, `Bot ${n}`, true);
+      ack({ ok: true });
+      broadcastLobby(room);
+    });
+    on(C2S.SET_MAP, (msg, ack) => {
+      const room = hostLobby(ack);
+      if (!room) return;
+      if (!MAPS[msg.map]) return ack({ error: 'Unknown map' });
+      room.map = msg.map;
       ack({ ok: true });
       broadcastLobby(room);
     });

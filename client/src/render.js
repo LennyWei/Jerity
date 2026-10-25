@@ -10,12 +10,46 @@
 //   r.addEvents(interp.takeEvents(), view);
 //   r.draw(view, performance.now(), { tilt, countdown, flip, banner, danger });
 
-import { ARENA, CAR_SIZE, OBSTACLES, CARS, DEFAULT_CAR, PLAYER_COLORS } from '../../shared/constants.js';
+import { ARENA, CAR_SIZE, OBSTACLES, MAPS, DEFAULT_MAP, SPAWN_POINTS, SCALE, CARS, DEFAULT_CAR, PLAYER_COLORS } from '../../shared/constants.js';
+import { drawBumperCar, drawFlippedCar, drawWreck, drawObstacle } from './art.js';
 import { CAR_STATE, EVENT, BUFF, HIT_KIND } from '../../shared/protocol.js';
 import { CONFIG } from '../../shared/config.js';
 
 const FX_SCALE = { full: 1, low: 0.4, off: 0 };
 const MAX_PARTICLES = 250;
+
+// Arena palettes as [r, g, b, a]. Without opts.corrupt the renderer keeps the original dark look;
+// with it (the Verity theme) colors blend from a cheerful cream play-mat to a dead black-and-red pit.
+const PAL_DARK = {
+  bg: [11, 13, 18, 1], floor: [26, 30, 40, 1], grid: [255, 255, 255, 0.045], wall: [43, 50, 66, 1],
+  dash: [255, 210, 63, 0.33], pillarA: [90, 100, 124, 1], pillarB: [42, 48, 64, 1], pillarEdge: [255, 90, 95, 1],
+  me: [255, 255, 255, 1], text: [232, 236, 244, 1],
+};
+const PAL_CHEER = {
+  bg: [216, 206, 180, 1], floor: [239, 231, 210, 1], grid: [43, 39, 51, 0.08], wall: [43, 39, 51, 1],
+  dash: [246, 185, 59, 0.95], pillarA: [110, 214, 198, 1], pillarB: [31, 158, 143, 1], pillarEdge: [43, 39, 51, 1],
+  me: [43, 39, 51, 1], text: [43, 39, 51, 1],
+};
+const PAL_DEAD = {
+  bg: [10, 7, 7, 1], floor: [20, 14, 13, 1], grid: [200, 40, 40, 0.07], wall: [58, 31, 28, 1],
+  dash: [180, 30, 40, 0.55], pillarA: [59, 42, 40, 1], pillarB: [29, 19, 18, 1], pillarEdge: [140, 29, 36, 1],
+  me: [236, 214, 206, 1], text: [230, 211, 200, 1],
+};
+const rgba = ([r, g, b, a]) => `rgba(${r | 0},${g | 0},${b | 0},${a.toFixed(3)})`;
+const toCss = (pal) => Object.fromEntries(Object.entries(pal).map(([k, v]) => [k, rgba(v)]));
+const DARK_CSS = { ...toCss(PAL_DARK), scan: 0, bleed: 0 };
+const themeCache = new Map();
+/** Verity theme colors at corruption c (0..1), cached per 1% step. */
+function themePalette(c) {
+  const step = Math.round(Math.max(0, Math.min(1, c)) * 100);
+  if (!themeCache.has(step)) {
+    const t = step / 100, k = t * t * (3 - 2 * t); // ease: lingers cheerful, then turns
+    const mixed = {};
+    for (const key of Object.keys(PAL_CHEER)) mixed[key] = PAL_CHEER[key].map((v, i) => v + (PAL_DEAD[key][i] - v) * k);
+    themeCache.set(step, { ...toCss(mixed), scan: 0.05 + t * 0.16, bleed: t * 0.5 });
+  }
+  return themeCache.get(step);
+}
 
 export function createRenderer(canvas, opts = {}) {
   const showHud = opts.showHud ?? true;
@@ -23,6 +57,16 @@ export function createRenderer(canvas, opts = {}) {
   const showBoard = opts.board ?? !showHud;
   let fx = FX_SCALE[opts.fx] ?? 1;
   const showFps = !!opts.fps;
+  const themed = typeof opts.corrupt === 'function'; // Verity theme
+  let obstacles = MAPS[DEFAULT_MAP]?.obstacles ?? OBSTACLES;
+  const obstacleHitAt = new Map(); // obstacle index -> time it was last hit (flash + wobble)
+  const motion = new Map();        // car id -> { x, y, a, t, speed (m/s), turn (rad/s), squashAt, steer }
+  const skids = [];                // tire marks: { x1, y1, x2, y2, life }
+  let freezeUntil = 0, frozenView = null; // hit-stop on big hits involving you
+  let floorTex = null;             // rubber-mat speckle pattern
+  let pal = DARK_CSS;
+  let scanPattern = null; // CRT scanlines: one dark row every 3 px
+  let bleedKey = '', bleedGrad = null;
   const ctx = canvas.getContext('2d');
 
   let dpr = 1, cssW = 0, cssH = 0, scale = 1, ox = 0, oy = 0;
@@ -103,6 +147,22 @@ export function createRenderer(canvas, opts = {}) {
   function addEvents(events, view) {
     if (!events?.length) return;
     const pos = new Map((view?.cars || []).map((c) => [c.id, c]));
+    // Impact feel: cars squash, obstacles wobble, big hits on you freeze the frame for a moment.
+    const squash = (id) => { const m = motion.get(id); if (m) m.squashAt = lastNow; };
+    for (const e of events) {
+      if (e.type === EVENT.HIT) {
+        squash(e.victim); squash(e.attacker);
+        if ((e.victim === me || e.attacker === me) && e.dmg >= 20) freezeUntil = lastNow + 70;
+      } else if (e.type === EVENT.HEADON) {
+        squash(e.a); squash(e.b);
+        if (e.a === me || e.b === me) freezeUntil = lastNow + 90;
+      } else if (e.type === EVENT.WALL) {
+        squash(e.id);
+        markObstacle(pos.get(e.id));
+      } else if (e.type === EVENT.KILL && (e.victim === me || e.attacker === me)) {
+        freezeUntil = lastNow + 110;
+      }
+    }
     for (const e of events) {
       switch (e.type) {
         case EVENT.HIT: {
@@ -222,7 +282,28 @@ export function createRenderer(canvas, opts = {}) {
     texts.push({ x, y, text, color, size, life: 0, max: 900 });
   }
 
+  /** A car bumped a wall or obstacle: if it was an obstacle, make that one flash and wobble. */
+  function markObstacle(c) {
+    if (!c) return;
+    let best = -1, bestD = 30;
+    obstacles.forEach((o, i) => {
+      let d;
+      if (o.kind === 'box') { // distance to the rotated barrier
+        const dx = c.x - o.x, dy = c.y - o.y, ca = Math.cos(-o.a), sa = Math.sin(-o.a);
+        const lx = Math.abs(dx * ca - dy * sa) - o.w / 2, ly = Math.abs(dx * sa + dy * ca) - o.h / 2;
+        d = Math.hypot(Math.max(lx, 0), Math.max(ly, 0));
+      } else d = Math.hypot(c.x - o.x, c.y - o.y) - o.r;
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (best >= 0) {
+      obstacleHitAt.set(best, lastNow);
+      const o = obstacles[best];
+      sparks((c.x + o.x) / 2, (c.y + o.y) / 2, 8, ['#c8cfdc', '#f6b93b', '#ffffff'], 160);
+    }
+  }
+
   function stepEffects(dt) {
+    for (let i = skids.length - 1; i >= 0; i--) if ((skids[i].life -= dt) <= 0) skids.splice(i, 1);
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
       p.life += dt;
@@ -259,9 +340,12 @@ export function createRenderer(canvas, opts = {}) {
     lastNow = now;
     fpsAvg += (1000 / Math.max(1, dt) - fpsAvg) * 0.05;
     stepEffects(dt);
+    pal = themed ? themePalette(opts.corrupt()) : DARK_CSS;
+    if (view && now < freezeUntil && frozenView) view = frozenView; // hit-stop: hold the frame
+    else { frozenView = view; if (view) trackMotion(view.cars, now); }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#0b0d12';
+    ctx.fillStyle = pal.bg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // World space
@@ -269,6 +353,7 @@ export function createRenderer(canvas, opts = {}) {
     const sy = shake ? (Math.random() * 2 - 1) * shake : 0;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox + sx), dpr * (oy + sy));
     drawArena();
+    drawSkids();
 
     const cars = view?.cars || [];
     const order = [...cars].sort((a, b) => rank(a) - rank(b));
@@ -279,6 +364,7 @@ export function createRenderer(canvas, opts = {}) {
 
     // Screen space (CSS pixels)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (themed) drawCrt();
     if (flash > 0.02) drawFlash();
     if (flashWhite > 0.02) { ctx.fillStyle = `rgba(255,255,255,${(flashWhite * 0.7).toFixed(3)})`; ctx.fillRect(0, 0, cssW, cssH); }
     if (showHud) drawHud(view, cars, hud, now);
@@ -291,46 +377,130 @@ export function createRenderer(canvas, opts = {}) {
     }
   }
 
+  /** Per-car speed and turn rate from frame to frame: drives skid marks, speed streaks, the wheel. */
+  function trackMotion(cars, now) {
+    const W = CAR_SIZE.W, H = CAR_SIZE.H;
+    const rear = (x, y, a, side) => [x - Math.cos(a) * (W / 2 - 5) - Math.sin(a) * side * (H / 2 - 3),
+      y - Math.sin(a) * (W / 2 - 5) + Math.cos(a) * side * (H / 2 - 3)];
+    for (const c of cars) {
+      const m = motion.get(c.id);
+      if (!m) { motion.set(c.id, { x: c.x, y: c.y, a: c.a, t: now, speed: 0, turn: 0, squashAt: -1e9, steer: 0 }); continue; }
+      const dt = (now - m.t) / 1000;
+      if (dt <= 0) continue;
+      let da = c.a - m.a;
+      while (da > Math.PI) da -= 2 * Math.PI;
+      while (da < -Math.PI) da += 2 * Math.PI;
+      m.speed += (Math.hypot(c.x - m.x, c.y - m.y) / SCALE / dt - m.speed) * 0.3;
+      m.turn += (da / dt - m.turn) * 0.3;
+      m.steer = Math.max(-1, Math.min(1, m.turn / 3));
+      if (c.s === CAR_STATE.ALIVE && Math.abs(m.turn) > 2.2 && m.speed > 7 && skids.length < 400) {
+        for (const side of [-1, 1]) {
+          const [x1, y1] = rear(m.x, m.y, m.a, side), [x2, y2] = rear(c.x, c.y, c.a, side);
+          skids.push({ x1, y1, x2, y2, life: 2500 });
+        }
+      }
+      m.x = c.x; m.y = c.y; m.a = c.a; m.t = now;
+    }
+  }
+
+  function drawSkids() {
+    if (!skids.length) return;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    for (const s of skids) {
+      ctx.strokeStyle = `rgba(20,16,20,${(0.32 * s.life / 2500).toFixed(3)})`;
+      ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+  }
+
   function rank(c) {
     if (c.s === CAR_STATE.DEAD) return 0;
     if (c.id === me) return 3;
     return c.s === CAR_STATE.FLIPPED ? 1 : 2;
   }
 
+  /** Verity theme: CRT scanlines and a red bleed from the edges, both stronger as he turns. */
+  function drawCrt() {
+    if (!scanPattern) {
+      const tile = document.createElement('canvas');
+      tile.width = 1; tile.height = 3;
+      const tc = tile.getContext('2d');
+      tc.fillStyle = '#000';
+      tc.fillRect(0, 2, 1, 1);
+      scanPattern = ctx.createPattern(tile, 'repeat');
+    }
+    ctx.globalAlpha = pal.scan;
+    ctx.fillStyle = scanPattern;
+    ctx.fillRect(0, 0, cssW, cssH);
+    ctx.globalAlpha = 1;
+    if (pal.bleed < 0.02) return;
+    const key = `${cssW}x${cssH}:${pal.bleed.toFixed(2)}`;
+    if (key !== bleedKey) {
+      bleedKey = key;
+      bleedGrad = ctx.createRadialGradient(cssW / 2, cssH / 2, Math.min(cssW, cssH) * 0.35, cssW / 2, cssH / 2, Math.max(cssW, cssH) * 0.7);
+      bleedGrad.addColorStop(0, 'rgba(140,0,16,0)');
+      bleedGrad.addColorStop(1, `rgba(140,0,16,${pal.bleed.toFixed(3)})`);
+    }
+    ctx.fillStyle = bleedGrad;
+    ctx.fillRect(0, 0, cssW, cssH);
+  }
+
   function drawArena() {
     const { W, H } = ARENA;
-    ctx.fillStyle = '#1a1e28';
+    ctx.fillStyle = pal.floor;
+    ctx.fillRect(0, 0, W, H);
+    // rubber-mat speckle
+    if (!floorTex) {
+      const tile = document.createElement('canvas');
+      tile.width = tile.height = 64;
+      const tc = tile.getContext('2d');
+      for (let i = 0; i < 140; i++) {
+        tc.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)';
+        tc.fillRect(Math.random() * 64, Math.random() * 64, 1.5, 1.5);
+      }
+      floorTex = ctx.createPattern(tile, 'repeat');
+    }
+    ctx.fillStyle = floorTex;
     ctx.fillRect(0, 0, W, H);
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.045)';
+    ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let x = 50; x < W; x += 50) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
     for (let y = 50; y < H; y += 50) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
     ctx.stroke();
 
+    // painted markings: center circle, dashed ring, spawn pads
+    ctx.strokeStyle = pal.grid;
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(W / 2, H / 2, 70, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.setLineDash([14, 12]);
+    ctx.beginPath(); ctx.arc(W / 2, H / 2, 120, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    for (const s of SPAWN_POINTS) {
+      ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI * 2); ctx.stroke();
+    }
+
     // Walls: rubber bumper with hazard dashes
     ctx.lineWidth = 8;
-    ctx.strokeStyle = '#2b3242';
+    ctx.strokeStyle = pal.wall;
     ctx.strokeRect(4, 4, W - 8, H - 8);
     ctx.setLineDash([24, 24]);
     ctx.lineWidth = 3;
-    ctx.strokeStyle = '#ffd23f55';
+    ctx.strokeStyle = pal.dash;
     ctx.strokeRect(4, 4, W - 8, H - 8);
     ctx.setLineDash([]);
+    // fence posts along the walls
+    ctx.fillStyle = pal.wall;
+    for (let x = 100; x < W; x += 100) { ctx.fillRect(x - 4, 0, 8, 10); ctx.fillRect(x - 4, H - 10, 8, 10); }
+    for (let y = 100; y < H; y += 100) { ctx.fillRect(0, y - 4, 10, 8); ctx.fillRect(W - 10, y - 4, 10, 8); }
 
-    for (const o of OBSTACLES) {
-      const g = ctx.createRadialGradient(o.x - o.r * 0.3, o.y - o.r * 0.3, o.r * 0.1, o.x, o.y, o.r);
-      g.addColorStop(0, '#5a647c');
-      g.addColorStop(1, '#2a3040');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = '#ff5a5f';
-      ctx.stroke();
-    }
+    obstacles.forEach((o, i) => {
+      const since = lastNow - (obstacleHitAt.get(i) ?? -1e9);
+      drawObstacle(ctx, o, pal, since < 260 ? 1 - since / 260 : 0);
+    });
   }
 
   function drawCar(c, now) {
@@ -350,61 +520,39 @@ export function createRenderer(canvas, opts = {}) {
     }
 
     if (c.s === CAR_STATE.DEAD) {
-      ctx.globalAlpha = 0.35;
-      ctx.fillStyle = '#3a3f4a';
-      roundRect(-W / 2, -H / 2, W, H, 6); ctx.fill();
-      ctx.strokeStyle = '#11141a';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(-8, -8); ctx.lineTo(8, 8); ctx.moveTo(8, -8); ctx.lineTo(-8, 8);
-      ctx.stroke();
+      drawWreck(ctx, { w: W, h: H });
       ctx.restore();
       return;
     }
 
+    const m = motion.get(c.id);
     if (c.s === CAR_STATE.FLIPPED) {
-      ctx.rotate(Math.sin(now / 70) * 0.08); // helpless wobble
-      ctx.fillStyle = '#2a2d35';
-      roundRect(-W / 2, -H / 2, W, H, 6); ctx.fill();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = color;
-      ctx.stroke();
-      ctx.fillStyle = '#0e0f12'; // wheels up
-      for (const [wx, wy] of [[-12, -9], [12, -9], [-12, 9], [12, 9]]) {
-        ctx.beginPath(); ctx.arc(wx, wy, 5, 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.strokeStyle = '#555b66';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(12, 0); ctx.stroke(); // axle
+      drawFlippedCar(ctx, { w: W, h: H, color, t: now });
     } else {
-      ctx.fillStyle = '#0e0f12'; // wheels
-      for (const [wx, wy] of [[-13, -H / 2 - 2], [9, -H / 2 - 2], [-13, H / 2 - 2], [9, H / 2 - 2]]) {
-        ctx.fillRect(wx, wy, 9, 4);
+      if (m && m.speed > 10 && c.s === CAR_STATE.ALIVE) { // speed streaks behind the car
+        ctx.strokeStyle = pal.text;
+        ctx.globalAlpha = Math.min(0.35, (m.speed - 10) / 12);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (const y of [-H * 0.3, 0, H * 0.3]) { ctx.moveTo(-W / 2 - 8, y); ctx.lineTo(-W / 2 - 8 - m.speed * 1.6, y); }
+        ctx.stroke();
+        ctx.globalAlpha = c.s === CAR_STATE.DISCONNECTED ? 0.3 : 1;
       }
-      ctx.fillStyle = color;
-      roundRect(-W / 2, -H / 2, W, H, 7); ctx.fill();
-      ctx.lineWidth = 3; // rubber bumper
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(10,14,22,0.75)'; // windshield toward the nose (+x)
-      roundRect(2, -H / 2 + 4, 9, H - 8, 3); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.22)'; // roof shine
-      roundRect(-12, -H / 2 + 5, 12, H - 10, 3); ctx.fill();
-      ctx.fillStyle = '#fff6c8'; // headlights
-      ctx.fillRect(W / 2 - 3, -H / 2 + 3, 3, 4);
-      ctx.fillRect(W / 2 - 3, H / 2 - 7, 3, 4);
+      const since = now - (m?.squashAt ?? -1e9);
+      const squash = since < 260 ? Math.sin((since / 260) * Math.PI) * (1 - since / 260) * 1.6 : 0;
+      drawBumperCar(ctx, { w: W, h: H, color, squash, steer: m?.steer || 0, t: now + c.id.length * 97 });
     }
 
     const since = now - (carFlash.get(c.id) ?? -1e9);
     if (since < 180) { // just got hit: white flash
       ctx.fillStyle = `rgba(255,255,255,${(0.85 * (1 - since / 180)).toFixed(3)})`;
-      roundRect(-W / 2 - 2, -H / 2 - 2, W + 4, H + 4, 8); ctx.fill();
+      roundRect(-W / 2 - 3, -H / 2 - 3, W + 6, H + 6, (H + 6) / 2); ctx.fill();
     }
 
     if (c.id === me) {
       ctx.lineWidth = 3;
-      ctx.strokeStyle = '#ffffff';
-      roundRect(-W / 2 - 3, -H / 2 - 3, W + 6, H + 6, 9);
+      ctx.strokeStyle = pal.me; // dark on the cream theme, white elsewhere
+      roundRect(-W / 2 - 6, -H / 2 - 6, W + 12, H + 12, (H + 12) / 2);
       ctx.stroke();
     }
     ctx.restore();
@@ -512,7 +660,7 @@ export function createRenderer(canvas, opts = {}) {
       if (name) {
         ctx.font = '600 12px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillStyle = '#e8ecf4';
+        ctx.fillStyle = pal.text;
         ctx.fillText(name, c.x, y - 4);
       }
     }
@@ -602,7 +750,7 @@ export function createRenderer(canvas, opts = {}) {
     // Who hit whom, newest on top, just above the tilt meter
     toasts.forEach((t, i) => {
       ctx.globalAlpha = t.life < 1700 ? 1 : 1 - (t.life - 1700) / 500;
-      pill(cssW / 2, cssH - 50 - i * 26, t.text, t.color, 13);
+      pill(cssW / 2 + Math.min(100, cssW * 0.1), cssH - 50 - i * 26, t.text, t.color, 13); // clear of Verity (bottom left)
     });
     ctx.globalAlpha = 1;
 
@@ -818,6 +966,8 @@ export function createRenderer(canvas, opts = {}) {
   return {
     resize, draw, addEvents, setPlayers, destroy,
     setMe: (id) => { me = id; },
+    /** Arena layout from the lobby (a key of MAPS). */
+    setMap: (id) => { obstacles = MAPS[id]?.obstacles ?? MAPS[DEFAULT_MAP]?.obstacles ?? OBSTACLES; obstacleHitAt.clear(); },
     setFx: (level) => { fx = FX_SCALE[level] ?? fx; },
     fps: () => fpsAvg,
   };

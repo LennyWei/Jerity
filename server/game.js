@@ -13,7 +13,7 @@
 import { World, Vec2, Box, Circle, Edge } from 'planck';
 import { CAR_STATE, EVENT, BUFF, packCar } from '../shared/protocol.js';
 import {
-  ARENA, SCALE, CAR_SIZE, OBSTACLES, SPAWN_POINTS, CARS, DEFAULT_CAR,
+  ARENA, SCALE, CAR_SIZE, OBSTACLES, MAPS, DEFAULT_MAP, SPAWN_POINTS, CARS, DEFAULT_CAR,
 } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { carHit, wallHit, flipTick, killReward, liveScore } from './mechanics.js';
@@ -22,8 +22,9 @@ const NO_INPUT = { tilt: 0, accel: false, taps: 0 };
 const VELOCITY_ITERATIONS = 8; // Planck solver passes per step
 const POSITION_ITERATIONS = 3;
 
-/** players: [{ id }] in spawn order. */
-export function createGame(players) {
+/** players: [{ id }] in spawn order. mapId: a key of MAPS (the arena's obstacles). */
+export function createGame(players, mapId = DEFAULT_MAP) {
+  const obstacles = (MAPS[mapId] || MAPS[DEFAULT_MAP])?.obstacles ?? OBSTACLES;
   const world = new World({ gravity: Vec2(0, 0) }); // top-down: no gravity
   const cars = new Map();   // id -> car; dead cars stay (without a body) so clients can draw the wreck and the KO
   const stats = new Map();  // id -> { kills, damage } for this round
@@ -33,6 +34,7 @@ export function createGame(players) {
   let now = 0;
   let timeLeft = CONFIG.ROUND_TIME_S;
   let lastSnapT = 0;
+  let clockBase = Date.now(); // snapshot times are this + simulation time
 
   buildArena();
   players.forEach((p, i) => addCar(p.id, SPAWN_POINTS[i % SPAWN_POINTS.length]));
@@ -56,8 +58,15 @@ export function createGame(players) {
   }
 
   function snapshot() {
+    // Stamp with simulation time, not the clock: snapshots go out every 50 ms but hold whole
+    // 33 ms ticks (1, then 2, then 1...), and clock stamps made clients play that back as a
+    // slow-fast stutter. But the simulation stands still in the countdown (and drops time after
+    // a stall), so when it falls behind the clock, move the base up: stamps far behind the clock
+    // make clients draw past the newest snapshot (jumpy) and slowly drift back (laggy).
+    const wall = Date.now();
+    if (wall - (clockBase + now) > CONFIG.SNAP_CLOCK_SLACK_MS) clockBase = wall - now;
     // Clients order snapshots by t and drop any that go backwards, so never repeat one.
-    lastSnapT = Math.max(Date.now(), lastSnapT + 1);
+    lastSnapT = Math.max(clockBase + Math.round(now), lastSnapT + 1);
     return {
       t: lastSnapT,
       cars: [...cars.values()].map(c => packCar({ ...c, sc: liveScore(stats.get(c.id)) })),
@@ -124,9 +133,11 @@ export function createGame(players) {
     corners.forEach((c, i) => {
       walls.createFixture(new Edge(c, corners[(i + 1) % 4]), { restitution: CONFIG.WALL_RESTITUTION });
     });
-    for (const o of OBSTACLES) {
-      world.createBody({ position: Vec2(o.x / SCALE, o.y / SCALE) })
-        .createFixture(new Circle(o.r / SCALE), { restitution: CONFIG.OBSTACLE_RESTITUTION });
+    for (const o of obstacles) {
+      // Bollards and tire stacks are circles; barriers are rotated boxes. All count as walls.
+      const shape = o.kind === 'box' ? new Box(o.w / 2 / SCALE, o.h / 2 / SCALE) : new Circle(o.r / SCALE);
+      world.createBody({ position: Vec2(o.x / SCALE, o.y / SCALE), angle: o.a || 0 })
+        .createFixture(shape, { restitution: CONFIG.OBSTACLE_RESTITUTION });
     }
 
     // Planck mixes restitution by taking the larger value, so a car (CAR_RESTITUTION) would
@@ -179,6 +190,7 @@ export function createGame(players) {
       buffUntil: 0,
       lastAttacker: null,
       lastHitAt: 0,
+      lastWallAt: -Infinity,    // last wall/pillar bump: another one soon after is pressing, not crashing
     };
     car.body = world.createBody({
       type: 'dynamic',
@@ -233,6 +245,14 @@ export function createGame(players) {
         car.invulnUntil = now + CONFIG.RECOVER_INVULN_MS;
         events.push({ type: EVENT.RECOVER, id: car.id });
       }
+      return;
+    }
+    if (now < car.knockUntil) {
+      // Knocked back: no control at all (throttle, grip, steering) until the push and the small
+      // spin from knock() play out, so holding forward can't resist it.
+      b.setLinearDamping(CONFIG.DRIVE_MODE === 'omni' ? CONFIG.OMNI_COAST_DAMPING : CONFIG.COAST_DAMPING);
+      b.setAngularDamping(CONFIG.ANGULAR_DAMPING);
+      car.flipHeldMs = 0;
       return;
     }
 
@@ -315,13 +335,28 @@ export function createGame(players) {
 
     if (want > 0) {
       b.setLinearDamping(0);
-      const k = (maxSpeed * want) / Math.hypot(wx, wy);
-      const dvx = wx * k - v.x, dvy = wy * k - v.y, dv = Math.hypot(dvx, dvy);
-      const cap = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
-      const s = dv > cap ? cap / dv : 1;
-      b.applyLinearImpulse(Vec2(dvx * s * mass, dvy * s * mass), b.getWorldCenter());
+      const accel = CONFIG.OMNI_ACCEL * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1) * dt;
+      const target = maxSpeed * want;
+      const s = v.length();
+      let nvx, nvy;
+      if (s < CONFIG.OMNI_ARC_MIN_SPEED) {
+        // Nearly still: no direction to swing yet, so push straight toward the target velocity.
+        const k = target / Math.hypot(wx, wy);
+        const dvx = wx * k - v.x, dvy = wy * k - v.y, dv = Math.hypot(dvx, dvy);
+        const f = dv > accel ? accel / dv : 1;
+        nvx = v.x + dvx * f; nvy = v.y + dvy * f;
+      } else {
+        // Moving: swing the direction of travel toward the tilt in an arc, keeping the speed, so a
+        // turn is a curve instead of braking and re-accelerating. Fast while far off, easing in.
+        const h = Math.atan2(v.y, v.x);
+        const d = Math.atan2(Math.sin(Math.atan2(wy, wx) - h), Math.cos(Math.atan2(wy, wx) - h));
+        const turn = Math.max(-CONFIG.OMNI_TURN_RATE, Math.min(CONFIG.OMNI_TURN_RATE, d * CONFIG.OMNI_TURN_GAIN)) * dt;
+        const ns = s + Math.max(-accel, Math.min(accel, target - s));
+        nvx = Math.cos(h + turn) * ns; nvy = Math.sin(h + turn) * ns;
+      }
+      b.applyLinearImpulse(Vec2((nvx - v.x) * mass, (nvy - v.y) * mass), b.getWorldCenter());
     } else {
-      b.setLinearDamping(CONFIG.COAST_DAMPING); // no tilt: roll to a stop
+      b.setLinearDamping(CONFIG.OMNI_COAST_DAMPING); // no tilt (or knocked back): roll to a stop
     }
 
     // Nose follows the direction of travel (only once actually moving, so bumps don't spin it).
@@ -402,7 +437,9 @@ export function createGame(players) {
     const impact = Math.max(0, -Vec2.dot(a ? vA : vB, away));
     if (impact < CONFIG.MIN_IMPACT_SPEED || coolingDown(`${car.id}|wall`)) return;
     const hit = wallHit(impact); // a real crash: lose speed and some HP
-    if (hit) {
+    const pressing = now - car.lastWallAt < CONFIG.WALL_PRESS_MS; // holding it into the wall, bounce after bounce
+    car.lastWallAt = now;
+    if (hit && !pressing) {
       car.body.setLinearVelocity(Vec2.mul(car.body.getLinearVelocity(), hit.speedKeep));
       const dmg = applyDamage(car, hit.dmg, null);
       events.push({ type: EVENT.WALL, id: car.id, dmg });
@@ -411,14 +448,18 @@ export function createGame(players) {
     checkDeath(car); // credits lastAttacker if within KILL_CREDIT_MS
   }
 
-  // Sends a car away from what it hit (`away` is a unit vector) at `speed` or faster, and takes
-  // away its throttle and grip for KNOCKBACK_MS so the push plays out. Without it the instant
-  // launch drives it straight back in and grip cancels a sideways push: cars grind into walls and
-  // each other, slide along each other, and get hit again (head-ons: concussed again after the stun).
+  // Sends a car away from what it hit (`away` is a unit vector) at `speed` or faster with a small
+  // spin, and takes away all control for KNOCKBACK_MS (see drive) so the push plays out. Without
+  // it the instant launch drives it straight back in and grip cancels a sideways push: cars grind
+  // into walls and each other, slide along each other, and get hit again.
   function knock(car, away, speed) {
-    const v = car.body.getLinearVelocity();
+    const b = car.body;
+    const v = b.getLinearVelocity();
     const out = Vec2.dot(v, away);
-    car.body.setLinearVelocity(Vec2.add(v, Vec2.mul(away, Math.max(speed, out) - out))); // keep a faster bounce
+    b.setLinearVelocity(Vec2.add(v, Vec2.mul(away, Math.max(speed, out) - out))); // keep a faster bounce
+    // Spin the way the push turns the nose (which side it was hit from), so it ends up facing a bit off.
+    const fwd = b.getWorldVector(Vec2(1, 0));
+    b.setAngularVelocity((fwd.x * away.y - fwd.y * away.x >= 0 ? 1 : -1) * CONFIG.KNOCKBACK_SPIN);
     car.knockUntil = now + CONFIG.KNOCKBACK_MS;
   }
 

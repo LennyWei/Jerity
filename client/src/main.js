@@ -9,6 +9,7 @@
 import './style.css';
 import { net } from './net.js';
 import { h, keepQuery } from './ui.js';
+import { bumpCorruption } from './verity-ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../shared/protocol.js';
 import * as home from './screens/home.js';
 import * as lobbyScreen from './screens/lobby.js';
@@ -37,7 +38,7 @@ function show(name, mountFn) {
 // ---------------------------------------------------------------------------
 
 function goHome(code = '', error = '') {
-  if (session.code) net.emit(C2S.LEAVE, {});
+  if (session.code) { net.emit(C2S.LEAVE, {}); bumpCorruption(0.02); }
   Object.assign(session, { playerId: null, code: null, lobby: null });
   history.replaceState(null, '', (code ? `/join/${code}` : '/') + keepQuery());
   show('home', (root) => home.mount(root, { net, code, error, onCreate, onJoin }));
@@ -52,9 +53,9 @@ function showLobby() {
 function showGame(countdown = null) {
   show('game', (root) => game.mount(root, {
     net, playerId: session.playerId, lobby: session.lobby, countdown,
-    onRoundEnd: (result) => show('results', (r) => results.mount(r, {
+    onRoundEnd: (result) => (bumpCorruption(0.06), show('results', (r) => results.mount(r, {
       result, lobby: session.lobby, playerId: session.playerId, onPlayAgain: showLobby,
-    })),
+    }))),
   }));
 }
 

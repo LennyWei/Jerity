@@ -7,8 +7,10 @@
 
 import { h, colorOf, joinUrl, renderQr } from '../ui.js';
 import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
-import { MIN_PLAYERS, MAX_PLAYERS } from '../../../shared/constants.js';
+import { MIN_PLAYERS, MAX_PLAYERS, MAPS, DEFAULT_MAP, ARENA } from '../../../shared/constants.js';
+import { drawObstacle } from '../art.js';
 import { calibrate, requestMotionPermission } from './game.js';
+import { mountVerity, LINES } from '../verity-ui.js';
 
 export function mount(root, { net, playerId, lobby, onLeave }) {
   let state = lobby;
@@ -39,6 +41,26 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
   const removeBot = h('button.btn.small.ghost', { onclick: () => botReq(C2S.REMOVE_BOT) }, '− Remove bot');
   const botRow = h('div.row', {}, addBot, removeBot);
 
+  // Arena picker: a small preview of each map. The host taps one; everyone sees the choice.
+  const MAP_PAL = { wall: '#2b2733', dash: 'rgba(246,185,59,0.95)', pillarA: '#6ed6c6', pillarB: '#1f9e8f', pillarEdge: '#2b2733', floor: '#efe7d2' };
+  const mapButtons = Object.entries(MAPS).map(([id, m]) => {
+    const preview = h('canvas.map-preview', { width: 200, height: 120 });
+    const c = preview.getContext('2d');
+    c.scale(200 / ARENA.W, 120 / ARENA.H);
+    c.fillStyle = MAP_PAL.floor; c.fillRect(0, 0, ARENA.W, ARENA.H);
+    c.lineWidth = 16; c.strokeStyle = MAP_PAL.wall; c.strokeRect(8, 8, ARENA.W - 16, ARENA.H - 16);
+    m.obstacles.forEach((o) => drawObstacle(c, o, MAP_PAL));
+    const btn = h('button.map', { type: 'button', onclick: async () => {
+      if (state.hostId !== playerId || state.map === id) return;
+      const res = await net.request(C2S.SET_MAP, { map: id });
+      if (res?.error) err.textContent = res.error;
+    } }, preview, h('span.map-name', {}, m.label), h('span.map-blurb', {}, m.blurb));
+    btn.dataset.map = id;
+    return btn;
+  });
+  const mapNote = h('div.muted');
+  const mapCard = h('div.card.maps', {}, h('div.map-head', {}, h('b', {}, 'Arena'), mapNote), h('div.map-list', {}, mapButtons));
+
   const recal = h('button.btn.ghost', { onclick: async () => {
     await requestMotionPermission(); // from this tap: iOS needs it
     recal.disabled = true;
@@ -66,6 +88,9 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
     const inLobby = state.state === ROOM_STATE.LOBBY;
     const botCount = state.players.filter((p) => p.bot).length;
     botRow.hidden = !host;
+    const current = state.map || DEFAULT_MAP;
+    mapButtons.forEach((b) => { b.classList.toggle('on', b.dataset.map === current); b.disabled = !host || !inLobby; });
+    mapNote.textContent = host ? 'Tap an arena to pick it' : `${MAPS[current]?.label || 'Classic'} · the host picks`;
     addBot.disabled = !inLobby || n >= MAX_PLAYERS;
     removeBot.disabled = !inLobby || botCount === 0;
     start.hidden = !host;
@@ -78,8 +103,10 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
 
   const off = net.on(S2C.LOBBY, (l) => { state = l; err.textContent = ''; render(); });
 
-  const el = h('div.screen', {},
+  const helper = h('div');
+  const el = h('div.screen.crt', {},
     h('div.row', { style: { width: 'min(760px, 100%)' } }, h('h2', {}, 'Lobby'), h('div', { style: { flex: 'none' } }, leave)),
+    helper,
     h('div.lobby', {},
       h('div.card.code-card', {},
         h('div.muted', {}, 'Room code'),
@@ -88,10 +115,11 @@ export function mount(root, { net, playerId, lobby, onLeave }) {
         h('div.muted', {}, 'Scan to join, or enter the code')),
       h('div.stack', { style: { width: '100%' } },
         h('div.card', {}, list),
-        ready, start, botRow, recal, note, err)));
+        ready, start, botRow, mapCard, recal, note, err)));
   root.append(el);
   renderQr(qr, joinUrl(state.code));
   render();
+  const verity = mountVerity(helper, { lines: LINES.lobby, name: () => state.players.find((p) => p.id === playerId)?.name });
 
-  return () => { off(); el.remove(); };
+  return () => { off(); verity.destroy(); el.remove(); };
 }
