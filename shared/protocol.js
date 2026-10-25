@@ -29,8 +29,8 @@ export const C2S = {
 
 // Server -> client
 export const S2C = {
-  JERITY_STATE: 'jerityState', // { roundId, phase, durationMs?, remainingMs?, mood?, focusId? }
-  JERITY_VOICE: 'jerityVoice', // { roundId, lineId, timing, text, audioBase64?, timeoutMs }
+  JERITY_STATE: 'jerityState', // { roundId, phase, durationMs?, remainingMs?, turnAwayInMs?, mood?, focusId? }
+  JERITY_VOICE: 'jerityVoice', // { roundId, lineId, timing, text, audioBase64?, url?, timeoutMs }
   JERITY_RULING: 'jerityRuling', // { roundId, events, applied }
   LOBBY:     'lobby',     // LobbyState
   COUNTDOWN: 'countdown', // { seconds }

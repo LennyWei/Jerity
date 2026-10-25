@@ -1,21 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { JERITY, JERITY_AUDIO_TYPES } from '../shared/jerity.js';
+import { JERITY, JERITY_AUDIO_TYPES, JERITY_LISTENING_CLIPS } from '../shared/jerity.js';
 import { S2C, CAR_STATE } from '../shared/protocol.js';
 
 // One exchange per round. The room owns the lifetime; late AI responses cannot affect a new game.
-export function createJerityRound({ game, pipeline, players, broadcast, isCurrent, limits = JERITY }) {
+export function createJerityRound({ game, pipeline, players, broadcast, isCurrent, roundNumber = 1, limits = JERITY }) {
   const roundId = randomUUID();
   const recordings = new Map();
   const abort = new AbortController();
   let phase = 'idle', closesAt = 0, mood = 'curious', focusId = null;
   let playback = null;
   let started = false;
+  let actionAt = null;
 
   const current = () => !abort.signal.aborted && isCurrent();
   const state = () => ({
     roundId, phase, mood, focusId,
     durationMs: limits.LISTEN_MS,
     remainingMs: Math.max(0, closesAt - Date.now()),
+    turnAwayInMs: actionAt === null ? null : Math.max(0, actionAt + limits.TURN_AWAY_MS - Date.now()),
   });
   function setPhase(value) {
     phase = value;
@@ -62,14 +64,16 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
         resolve();
       };
       // Spectators still hear the line when a room temporarily has no human drivers.
-      const timeout = waiting.size ? limits.PLAYBACK_TIMEOUT_MS : Math.min(limits.PLAYBACK_TIMEOUT_MS, 6000);
+      const timeoutMs = line.timeoutMs || limits.PLAYBACK_TIMEOUT_MS;
+      const timeout = waiting.size ? timeoutMs : Math.min(timeoutMs, 6000);
       const timer = setTimeout(finish, timeout);
       playback = { id, waiting, finish };
       abort.signal.addEventListener('abort', finish, { once: true });
       broadcast(S2C.JERITY_VOICE, {
         roundId, lineId: id, timing: line.timing, text: line.text,
         audioBase64: line.audio ? Buffer.from(line.audio).toString('base64') : null,
-        timeoutMs: limits.PLAYBACK_TIMEOUT_MS,
+        ...(line.url ? { url: line.url } : {}),
+        timeoutMs,
       });
     });
   }
@@ -77,6 +81,13 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
     if (started || !current()) return;
     started = true;
     try {
+      setPhase('inviting');
+      await speak({
+        timing: 'listening_cue', text: 'Jerity is ready to listen.',
+        url: JERITY_LISTENING_CLIPS[(roundNumber - 1) % JERITY_LISTENING_CLIPS.length],
+        timeoutMs: limits.LISTEN_CUE_TIMEOUT_MS,
+      });
+      if (!current()) return;
       closesAt = Date.now() + limits.LISTEN_MS;
       setPhase('listening');
       await delay(limits.LISTEN_MS);
@@ -109,6 +120,7 @@ export function createJerityRound({ game, pipeline, players, broadcast, isCurren
       for (const line of lines.filter(l => l.timing === 'before_effect')) await speak(line);
       if (!current()) return;
       const applied = !!(event && event.action !== 'none' && game.applyJerityAction(event));
+      actionAt = Date.now();
       broadcast(S2C.JERITY_RULING, { roundId, events: applied ? [event] : [], applied });
       broadcast(S2C.SNAP, game.snapshot());
       setPhase('effect');

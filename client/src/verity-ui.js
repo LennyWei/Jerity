@@ -62,15 +62,26 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
   el.classList.add('verity');
   el.innerHTML = `<div class="v-face" role="img" aria-label="Jerity">${FACE}</div>
     <div class="v-controls">
-      <button class="v-sound" type="button" aria-label="Mute Jerity" title="Mute Jerity"></button>
       ${microphone ? '<button class="v-mic" type="button"></button>' : ''}
     </div>
     <span class="v-status" role="status" aria-live="polite"></span>`;
   const face = el.querySelector('.v-face'), mouth = el.querySelector('.v-mouth');
   const pupils = [...el.querySelectorAll('.v-pupil')], status = el.querySelector('.v-status');
-  const sound = el.querySelector('.v-sound'), mic = el.querySelector('.v-mic');
+  // A body-level control stays in the viewport corner despite screen transforms and scrolling.
+  const sound = document.createElement('button');
+  sound.className = 'v-sound v-corner-sound';
+  sound.type = 'button';
+  document.body.append(sound);
+  const mic = el.querySelector('.v-mic');
   let alive = true, speaking = false, phase = 'idle', mood = '', focusId = null;
   let watchedId = null, switchAt = 0, pulseTimer = 0, greetingTimer = 0, micBusy = false;
+  let awayTimer = 0, awayReady = false, turnedAway = false, roundId = null;
+  function updateAway() {
+    // Finish the follow-up line before turning, even if it runs beyond the four-second delay.
+    turnedAway = awayReady && phase === 'idle' && !speaking;
+    el.classList.toggle('v-away', turnedAway);
+    if (turnedAway) face.setAttribute('aria-label', 'Jerity is looking away.');
+  }
   function expression() {
     const stage = stageOf(corruption());
     const sinister = ['vengeful', 'menacing', 'chaotic'].includes(mood);
@@ -84,6 +95,7 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
     speaking = value;
     el.classList.toggle('v-speaking', value);
     expression();
+    updateAway();
   }
   function refreshSound() {
     sound.textContent = soundMuted() ? '♪ ×' : '♪';
@@ -146,6 +158,7 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
   const pointer = event => { if (!quiet) lookAt(event.clientX, event.clientY); };
   addEventListener('pointermove', pointer);
   function watch(view, project, now) {
+    if (turnedAway) return;
     const cars = view?.cars.filter(c => c.s !== CAR_STATE.DEAD && c.s !== CAR_STATE.DISCONNECTED) || [];
     if (!cars.length) return;
     if (now >= switchAt || !cars.some(c => c.id === watchedId)) {
@@ -158,13 +171,25 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
     lookAt(point.x, point.y);
   }
   function setState(next) {
+    if (next.roundId !== roundId || ['inviting', 'listening'].includes(next.phase)) {
+      clearTimeout(awayTimer);
+      awayReady = false;
+    }
+    roundId = next.roundId;
     phase = next.phase || 'idle'; mood = next.mood || mood;
     focusId = phase === 'idle' ? null : next.focusId || null;
     el.dataset.phase = phase;
-    status.textContent = phase === 'listening' ? 'Jerity is listening. Make your case now.'
+    status.textContent = phase === 'inviting' ? 'Jerity is about to listen.'
+      : phase === 'listening' ? 'Jerity is listening. Make your case now.'
       : phase === 'thinking' || phase === 'uploading' ? 'Jerity is deciding.'
       : phase === 'idle' ? 'Jerity is watching.' : 'Jerity has made his decision.';
     face.setAttribute('aria-label', status.textContent);
+    if (Number.isFinite(next.turnAwayInMs)) {
+      clearTimeout(awayTimer);
+      if (next.turnAwayInMs <= 0) awayReady = true;
+      else awayTimer = setTimeout(() => { awayReady = true; updateAway(); }, next.turnAwayInMs);
+    }
+    updateAway();
     expression();
   }
   function pulse() {
@@ -177,13 +202,18 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
   expression();
   return {
     setState, watch, pulse, microphoneError,
-    playLine: line => { status.textContent = line.text; return playVoice({ ...line, fallback: true, onSpeaking }); },
+    playLine: line => {
+      status.textContent = line.text;
+      return playVoice({ ...line, fallback: line.timing !== 'listening_cue', onSpeaking });
+    },
     say: text => playVoice({ text, fallback: true, onSpeaking }),
     react: events => { if (events?.some(e => e.type === 'kill')) pulse(); },
     verdict: () => { pulse(); expression(); },
     destroy() {
       alive = false; stopVoice(); offMic();
       clearInterval(clock); clearTimeout(greetingTimer); clearTimeout(pulseTimer);
+      clearTimeout(awayTimer);
+      sound.remove();
       removeEventListener('pointermove', pointer);
       removeEventListener('pointerdown', startGreeting);
       removeEventListener('keydown', startGreeting);

@@ -20,32 +20,36 @@ const ruling = () => ({
   audioBuffers: [{ timing: 'before_effect', text: 'A boost for Alice.', audio: Buffer.from('mp3') },
     { timing: 'after_effect', text: 'Make it count.', audio: Buffer.from('mp3') }],
 });
-function setup({ pipeline, onEvent, customLimits } = {}) {
+function setup({ pipeline, onEvent, customLimits, roundNumber = 1 } = {}) {
   const game = createGame(roster), events = [];
+  let listeningReady;
+  const listening = new Promise(resolve => { listeningReady = resolve; });
   let current = true;
   const cycle = createJerityRound({ game, pipeline: pipeline || { runCycle: async () => ruling() },
-    players: () => roster, limits: customLimits || limits, isCurrent: () => current,
+    players: () => roster, limits: customLimits || limits, isCurrent: () => current, roundNumber,
     broadcast: (type, payload) => {
       events.push({ type, payload });
+      if (type === S2C.JERITY_STATE && payload.phase === 'listening') listeningReady();
       onEvent?.(type, payload, game);
       if (type === S2C.JERITY_VOICE) queueMicrotask(() => {
         for (const p of roster) cycle.played(p.id, payload);
       });
     },
   });
-  return { cycle, game, events, invalidate: () => { current = false; } };
+  return { cycle, game, events, listening, invalidate: () => { current = false; } };
 }
 
 test('one combined recording batch; before audio completes before action and after audio follows it', async () => {
   let inputs;
   const observed = [];
-  const { cycle, game, events } = setup({
+  const { cycle, game, events, listening } = setup({
     pipeline: { runCycle: async (_state, audios) => { inputs = audios; return ruling(); } },
     onEvent: (type, payload, g) => {
       if (type === S2C.JERITY_VOICE) observed.push([payload.timing, g.cars.get('a').buff]);
     },
   });
   const running = cycle.start();
+  await listening;
   const roundId = cycle.state().roundId;
   assert.equal(cycle.busy, true);
   assert.equal(cycle.submit('a', { roundId, ...recording }).ok, true);
@@ -53,18 +57,20 @@ test('one combined recording batch; before audio completes before action and aft
   assert.ok(cycle.submit('a', { roundId, ...recording }).error);
   await running;
   assert.equal(inputs.length, 2);
-  assert.deepEqual(observed, [['before_effect', BUFF.NONE], ['after_effect', BUFF.BOOST]]);
+  assert.deepEqual(observed, [['listening_cue', BUFF.NONE], ['before_effect', BUFF.NONE], ['after_effect', BUFF.BOOST]]);
   assert.equal(game.cars.get('a').buffUntil, 3000);
   assert.equal(game.now, 0);
   assert.equal(cycle.busy, false);
   assert.deepEqual(events.filter(e => e.type === S2C.JERITY_STATE).map(e => e.payload.phase),
-    ['listening', 'uploading', 'thinking', 'speaking', 'effect', 'idle']);
+    ['inviting', 'listening', 'uploading', 'thinking', 'speaking', 'effect', 'idle']);
+  assert.ok(cycle.state().turnAwayInMs > 0 && cycle.state().turnAwayInMs <= 4000);
   assert.ok(cycle.submit('b', { roundId, ...recording }).error);
 });
 
 test('reject stale, spectator, oversized and unsupported microphone submissions', async () => {
-  const { cycle } = setup();
+  const { cycle, listening } = setup();
   const running = cycle.start(), roundId = cycle.state().roundId;
+  await listening;
   assert.ok(cycle.submit('a', { ...recording, roundId: 'old-round' }).error);
   assert.ok(cycle.submit('spectator', { ...recording, roundId }).error);
   assert.ok(cycle.submit('a', { ...recording, roundId, mimeType: 'text/plain' }).error);
@@ -102,11 +108,26 @@ test('missing playback acknowledgments have a deadline', async () => {
   const game = createGame(roster);
   const cycle = createJerityRound({ game, pipeline: { runCycle: async () => ruling() },
     players: () => roster, isCurrent: () => true, broadcast() {},
-    limits: { ...limits, PLAYBACK_TIMEOUT_MS: 10 },
+    limits: { ...limits, PLAYBACK_TIMEOUT_MS: 10, LISTEN_CUE_TIMEOUT_MS: 10 },
   });
   await cycle.start();
   assert.equal(cycle.busy, false);
   assert.equal(game.cars.get('a').buff, BUFF.BOOST);
+});
+
+test('listening clips alternate by round, and recording stays closed until the cue completes', async () => {
+  for (const roundNumber of [1, 2, 3]) {
+    const { cycle, events, listening } = setup({ roundNumber });
+    const running = cycle.start();
+    assert.equal(cycle.state().phase, 'inviting');
+    assert.ok(cycle.submit('a', { roundId: cycle.state().roundId, ...recording }).error);
+    const cue = events.find(event => event.type === S2C.JERITY_VOICE).payload;
+    assert.equal(cue.url, `/audio/jerity/listening-${roundNumber === 2 ? 2 : 1}.mp3`);
+    await listening;
+    assert.equal(cycle.state().phase, 'listening');
+    assert.equal(cycle.submit('a', { roundId: cycle.state().roundId, ...recording }).ok, true);
+    cycle.cancel(); await running;
+  }
 });
 
 test('game honors bounded parameters, target arrays and obstacle expiry', () => {

@@ -171,6 +171,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
     const game = room.game;
     room.jerity = createJerityRound({
       game, pipeline: verityPipelines.get(room.code),
+      roundNumber: room.match.round,
       ...(jerityLimits ? { limits: jerityLimits } : {}),
       players: () => [...room.players.values()],
       broadcast: (event, payload) => io.to(room.code).emit(event, payload),

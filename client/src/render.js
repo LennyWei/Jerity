@@ -1098,8 +1098,6 @@ export function createRenderer(canvas, opts = {}) {
       const label = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
       const timerX = hud.jerity ? cssW / 2 - 92 : cssW / 2;
       pill(timerX, 20, label, s <= 10 ? '#ff5a5f' : '#e8ecf4', 18);
-      const left = cars.filter((c) => c.s !== CAR_STATE.DEAD).length;
-      pill(timerX, 48, `${left} left`, '#9aa3b5', 12);
     }
 
     if (mine) { // own HP (top left) and score (top right), with a neon glow

@@ -11,9 +11,11 @@ import express from 'express';
 import { Server } from 'socket.io';
 import { createRooms } from '../server/rooms.js';
 import { JERITY } from '../shared/jerity.js';
+import { S2C } from '../shared/protocol.js';
 
 const app = express(), server = http.createServer(app), io = new Server(server);
 const captures = [];
+const cueRequests = [];
 const rooms = createRooms(io, {
   jerityLimits: { ...JERITY, LISTEN_MS: 1200, UPLOAD_GRACE_MS: 300 },
   pipelineFactory: () => ({ runCycle: async (_state, audios) => {
@@ -24,6 +26,16 @@ const rooms = createRooms(io, {
 });
 io.on('connection', rooms.attach);
 const dist = path.resolve('client/dist');
+// A short silent WAV exercises actual cue playback without requiring the user's MP3s.
+const cueAudio = Buffer.alloc(44 + 1600, 0);
+cueAudio.write('RIFF', 0); cueAudio.writeUInt32LE(cueAudio.length - 8, 4); cueAudio.write('WAVEfmt ', 8);
+cueAudio.writeUInt32LE(16, 16); cueAudio.writeUInt16LE(1, 20); cueAudio.writeUInt16LE(1, 22);
+cueAudio.writeUInt32LE(8000, 24); cueAudio.writeUInt32LE(16000, 28);
+cueAudio.writeUInt16LE(2, 32); cueAudio.writeUInt16LE(16, 34);
+cueAudio.write('data', 36); cueAudio.writeUInt32LE(1600, 40);
+app.get('/audio/jerity/listening-:clip.mp3', (req, res) => {
+  cueRequests.push(req.params.clip); res.type('audio/wav').send(cueAudio);
+});
 app.use(express.static(dist));
 app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -56,6 +68,19 @@ async function until(expression, timeout = 10000) {
   while (Date.now() < deadline) { if (await evaluate(expression)) return; await pause(100); }
   throw new Error(`Browser condition timed out: ${expression}`);
 }
+async function checkMute(screen) {
+  const position = await evaluate(`(() => {
+    const button = document.querySelector('.v-sound'), rect = button.getBoundingClientRect();
+    return { count: document.querySelectorAll('.v-sound').length,
+      fixed: getComputedStyle(button).position, body: button.parentElement === document.body,
+      right: document.documentElement.clientWidth - rect.right, bottom: innerHeight - rect.bottom };
+  })()`);
+  assert.equal(position.count, 1, screen);
+  assert.equal(position.fixed, 'fixed', screen);
+  assert.equal(position.body, true, screen);
+  assert.ok(position.right >= 9 && position.right <= 11, `${screen}: ${JSON.stringify(position)}`);
+  assert.ok(position.bottom >= 9 && position.bottom <= 11, `${screen}: ${JSON.stringify(position)}`);
+}
 try {
   const endpoint = await new Promise((resolve, reject) => {
     let output = '';
@@ -82,13 +107,18 @@ try {
   await call('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: false });
   await call('Page.navigate', { url: origin });
   await until("!!document.querySelector('input.field')");
+  await checkMute('home');
+  await evaluate('window.scrollTo(0, document.body.scrollHeight)');
+  await checkMute('scrolled home');
   assert.equal(await evaluate("document.querySelectorAll('.v-bubble').length"), 0);
   await evaluate("document.querySelector('input.field').value = 'Browser Driver'; [...document.querySelectorAll('button')].find(b => b.textContent === 'Practice vs 3 bots').click()");
   await until("!!document.querySelector('.v-mic')");
+  await checkMute('lobby');
   await evaluate("document.querySelector('.v-mic').click()");
   await until("document.querySelector('.v-mic')?.textContent === 'Mic on'");
   await evaluate("[...document.querySelectorAll('button')].find(b => b.textContent === 'Start').click()");
   await until("document.querySelector('.bb-verity')?.dataset.phase === 'listening'");
+  await checkMute('game');
   const listening = await call('Page.captureScreenshot', { format: 'png' });
   const screenshot = path.join(tmpdir(), 'jerity-listening.png');
   await writeFile(screenshot, Buffer.from(listening.data, 'base64'));
@@ -106,8 +136,32 @@ try {
   assert.ok(layout.top < 20);
   assert.ok(layout.pupilY > 42);
   assert.equal(layout.bubbles, 0);
+  assert.deepEqual(cueRequests, ['1']);
+  assert.equal(await evaluate("document.querySelector('.bb-verity').classList.contains('v-away')"), false);
+  await until("document.querySelector('.bb-verity')?.classList.contains('v-away')", 5000);
+  await until("getComputedStyle(document.querySelector('.bb-verity .v-eyes')).opacity === '0'");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.bb-verity .v-mouth')).opacity"), '0');
+  const awayScreenshot = path.join(tmpdir(), 'jerity-looking-away.png');
+  const away = await call('Page.captureScreenshot', { format: 'png' });
+  await writeFile(awayScreenshot, Buffer.from(away.data, 'base64'));
+  const code = await evaluate("location.pathname.split('/').pop()");
+  io.to(code).emit(S2C.JERITY_STATE, { roundId: 'next-browser-round', phase: 'inviting', turnAwayInMs: null });
+  await until("!document.querySelector('.bb-verity').classList.contains('v-away')");
+  await until("getComputedStyle(document.querySelector('.bb-verity .v-eyes')).opacity === '1'");
+  const playerId = [...io.sockets.sockets.values()].find(socket => socket.data.code === code).data.pid;
+  io.to(code).emit(S2C.ROUND_END, { winnerId: playerId,
+    leaderboard: [{ id: playerId, name: 'Browser Driver', kills: 0, damage: 0, survived: 10, score: 20 }] });
+  await until("!!document.querySelector('.rs')");
+  await checkMute('results');
+  const spectator = await call('Target.createTarget', { url: 'about:blank' }, null);
+  ({ sessionId } = await call('Target.attachToTarget', { targetId: spectator.targetId, flatten: true }, null));
+  await call('Runtime.enable'); await call('Page.enable');
+  await call('Page.navigate', { url: `${origin}/spectate/${code}` });
+  await until("!!document.querySelector('.spectate-verity')");
+  await checkMute('spectate');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, recordedClips: captures.length, layout, screenshot }));
+  console.log(JSON.stringify({ passed: true, recordedClips: captures.length, layout, screenshot, awayScreenshot,
+    muteScreens: ['home', 'lobby', 'game', 'results', 'spectate'], cueRequests }));
 } finally {
   if (ws?.readyState === WebSocket.OPEN) { await call('Browser.close', {}, null).catch(() => {}); ws.close(); }
   if (chrome.exitCode === null) await Promise.race([once(chrome, 'exit'), pause(2000)]);

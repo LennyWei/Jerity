@@ -10,7 +10,10 @@ and Fish Audio model remain configured in `verity/verity.js` and
 `verity/verity-voice.js`.
 
 Players opt in using **Enable mic** in the lobby or above the arena. After each
-countdown, the server opens one shared 4.5-second listening window. A green halo
+countdown, Jerity plays one of two alternating listening invitations
+(`listening-1.mp3` / `listening-2.mp3`, under four seconds each), then the server
+opens one shared 4.5-second listening window. Missing invitation clips stay silent.
+A green halo
 means speak; a violet halo means Jerity is deciding. The microphone is released
 after capture, when disabled, on disconnect, and when leaving the game screen.
 Permission denial or unsupported recording does not prevent playing.
@@ -29,6 +32,10 @@ Dynamic lines use Fish Audio, with browser speech if audio generation fails.
 Landing/lobby greetings use only your MP3 recordings and stay silent while
 missing; see `client/public/audio/jerity/README.md`. Speech bubbles are removed.
 The face follows living cars, prioritizing the target of the current ruling.
+Four seconds after the ruling takes effect, Jerity turns away: his head stays
+visible while his eyes and mouth fade out. If his follow-up is still playing, he
+finishes it first. He faces the players again for the next round's invitation.
+Mute stays fixed in the bottom-right viewport corner on every screen.
 Sound/microphone controls have accessible labels and status announcements.
 
 Action durations and HP amounts are clamped by `server/game.js`. `swap_positions`
