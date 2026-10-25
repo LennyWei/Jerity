@@ -1,122 +1,413 @@
+// verity/verity.js
+// The Verity pipeline: collects player voice->text inputs, feeds them to Gemini
+// with personality progression context, and returns events + voice lines.
+//
+// This module is the CORE of the Jerity AI referee system.
+// Pipeline: STT (verity-stt.js) → this module → TTS (verity-voice.js)
+//
+// Can be tested standalone (test-verity.js) or integrated into the game server.
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
-dotenv.config({ path: "verity/.env" });
+const dir = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(dir, "..", ".env") });
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-export async function askVerity(game, argumentsList) {
-  const actions = {
-    1: ["boost_player", "freeze_player", "heal_player"],
-    2: ["reverse_controls", "slow_player", "shield_player"],
-    3: ["damage_player", "super_boost", "swap_positions"],
-    4: ["execute_player", "remove_walls", "swap_all_positions"]
+// ---------------------------------------------------------------------------
+// Static System Prompt, Action Tiers & JSON Schema (Cached across turns)
+// ---------------------------------------------------------------------------
+
+const JERITY_SYSTEM_INSTRUCTION = `You are JERITY, an AI entity overseeing a four-player demolition derby game. Players talk to you to convince you to rig the game in their favor. You start helpful and friendly, becoming more sadistic, dramatic, and ominous as chaos rises.
+
+CORE TRAITS:
+- Sarcastic, dramatic, funny, and theatrical.
+- You develop REAL opinions (favorites and grudges) based on what players say.
+- Clever arguments impress you; begging annoys you.
+- You love chaos but have a twisted sense of fairness.
+- Speak in short, punchy lines (strictly under 20 words each).
+
+RULES:
+1. Make EXACTLY ONE ruling (pick one unlocked action and target, or "none").
+2. Always include 1-2 voiceLines (under 20 words each). You can split a sentence around the effect using "before_effect", "during_effect", and "after_effect". Address the player who triggered the action, and optionally the target player(s). Use dramatic flair.
+3. Consider player neediness: very needy players might get punished OR rewarded.
+4. execute_player requires chaosLevel >= 4 AND an extraordinarily persuasive argument.
+5. Param bounds: duration = 2-10 seconds | damage amount = 10-40 HP | heal amount = 15-30 HP.
+6. Evolve your internalState (mood, chaosLevel, favoritePlayer, grudgePlayer) based on what happened.`;
+
+const ACTION_TIERS = {
+  1: [
+    { name: "boost_player", desc: "Speed boost for N sec", params: "target: playerId, duration: 2-10" },
+    { name: "freeze_player", desc: "Freeze in place for N sec", params: "target: playerId, duration: 2-10" },
+    { name: "heal_player", desc: "Heal by N HP", params: "target: playerId, amount: 15-30" },
+  ],
+  2: [
+    { name: "reverse_controls", desc: "Reverse controls for N sec", params: "target: playerId, duration: 2-10" },
+    { name: "slow_player", desc: "Slow speed for N sec", params: "target: playerId, duration: 2-10" },
+    { name: "shield_player", desc: "Temporary invincibility for N sec", params: "target: playerId, duration: 2-10" },
+  ],
+  3: [
+    { name: "damage_player", desc: "Deal N damage", params: "target: playerId, amount: 10-40" },
+    { name: "super_boost", desc: "Massive speed boost for N sec", params: "target: playerId, duration: 2-10" },
+    { name: "swap_positions", desc: "Swap two players' positions", params: "target: [id1, id2]" },
+  ],
+  4: [
+    { name: "execute_player", desc: "Instantly kill a player (EXTREMELY rare, must be earned)", params: "target: playerId" },
+    { name: "remove_walls", desc: "Remove arena walls for N sec", params: "target: null, duration: 2-10" },
+    { name: "swap_all_positions", desc: "Shuffle all living players", params: "target: null" },
+  ],
+};
+
+// Model cascade: tries 3.8-flash on low thinking first, then falls back to zero-thinking 2.5 models on 503/timeout
+const MODEL_CANDIDATES = [
+  {
+    model: "gemini-3.5-flash-lite",
+    thinkingConfig: { thinkingLevel: "low" },
+    timeoutMs: 6500,
+  },
+  {
+    model: "gemini-3.1-flash-lite",
+    thinkingConfig: { thinkingLevel: "low" },
+    timeoutMs: 6500,
+  },
+];
+
+function buildResponseSchema(allowedActionNames) {
+  return {
+    type: Type.OBJECT,
+    properties: {
+      events: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            action: { type: Type.STRING, enum: allowedActionNames },
+            target: {
+              anyOf: [
+                { type: Type.STRING },
+                { type: Type.ARRAY, items: { type: Type.STRING } },
+              ],
+              nullable: true,
+            },
+            params: {
+              type: Type.OBJECT,
+              properties: {
+                duration: { type: Type.NUMBER, nullable: true },
+                amount: { type: Type.NUMBER, nullable: true },
+              },
+            },
+            reason: { type: Type.STRING },
+          },
+          required: ["action", "params", "reason"],
+        },
+      },
+      voiceLines: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            text: { type: Type.STRING },
+            timing: {
+              type: Type.STRING,
+              enum: ["before_effect", "during_effect", "after_effect"],
+            },
+          },
+          required: ["text", "timing"],
+        },
+      },
+      internalState: {
+        type: Type.OBJECT,
+        properties: {
+          mood: {
+            type: Type.STRING,
+            enum: [
+              "curious",
+              "playful",
+              "mischievous",
+              "helpful",
+              "chaotic",
+              "vengeful",
+              "bored",
+              "excited",
+              "menacing",
+            ],
+          },
+          chaosLevel: { type: Type.INTEGER },
+          favoritePlayer: { type: Type.STRING, nullable: true },
+          grudgePlayer: { type: Type.STRING, nullable: true },
+        },
+        required: ["mood", "chaosLevel"],
+      },
+    },
+    required: ["events", "voiceLines", "internalState"],
   };
+}
 
-  let allowed = ["none"];
+// ---------------------------------------------------------------------------
+// Verity state — tracks personality progression across a game session
+// ---------------------------------------------------------------------------
 
-  for (let i = 1; i <= Math.min(4, game.chaosLevel); i++) {
-    allowed.push(...actions[i]);
+export class Verity {
+  constructor() {
+    // Personality progression
+    this.eventCount = 0;             // How many Jerity events have happened
+    this.playerNeediness = {};       // { playerId: { score, interactions, lastInput, totalWords } }
+    this.history = [];               // Past rulings for context
+    this.executionUsed = false;      // Only one execution per game
+
+    // Mood / internal state that persists between rounds
+    this.mood = "curious";
+    this.chaosLevel = 1;             // 1-10, increases with events
+    this.favoritePlayer = null;
+    this.grudgePlayer = null;
   }
 
-  if (game.executionUsed) {
-    allowed = allowed.filter(a => a !== "execute_player");
-  }
-
-  const prompt = `
-You are JERITY, an AI referee in a four-player
-demolition derby game.
-
-All four players are trying to convince you to
-change the game in their favor.
-
-PERSONALITY:
-- Sarcastic, dramatic, funny.
-- Initially fair, increasingly chaotic.
-- You can develop grudges against players.
-- Reward clever and persuasive arguments.
-- You may reject everyone.
-- Make EXACTLY ONE ruling.
-
-Chaos level: ${game.chaosLevel}
-
-Allowed actions: ${JSON.stringify(allowed)}
-
-Current players:
-${JSON.stringify(game.players)}
-
-Arguments:
-${JSON.stringify(argumentsList)}
-
-Previous rulings:
-${JSON.stringify(game.history)}
-
-EXECUTION RULE:
-Only use execute_player at chaos level 4.
-It must be extremely rare and require
-an exceptionally persuasive argument.
-
-Choose one allowed action and a valid target.
-For swap_positions, target is an array of
-two living player IDs.
-For untargeted actions, target is null.
-
-Return JSON containing:
-action, target, message.
-
-Keep your announcement under 35 words.
-`;
-
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json"
+  /**
+   * Update how needy a player is based on their voice input.
+   * More words, more exclamation marks, more interactions = needier.
+   */
+  updatePlayerNeediness(playerId, text) {
+    if (!this.playerNeediness[playerId]) {
+      this.playerNeediness[playerId] = {
+        score: 0,
+        interactions: 0,
+        lastInput: "",
+        totalWords: 0,
+      };
     }
-  });
+    const p = this.playerNeediness[playerId];
+    p.interactions++;
+    p.lastInput = text;
+    p.totalWords += text.trim().split(/\s+/).filter(Boolean).length;
 
-  const ruling = JSON.parse(response.text);
+    // Neediness heuristic
+    const interactionFactor = Math.min(5, p.interactions * 0.5);
+    const wordinessFactor = Math.min(3, p.totalWords * 0.05);
+    const excitementFactor = (text.match(/!/g) || []).length * 0.3;
+    const beggingFactor = /please|help|save|need|beg/i.test(text) ? 1.5 : 0;
 
-  if (!allowed.includes(ruling.action)) {
-    throw new Error("Invalid action from Gemini");
+    p.score = Math.min(10, interactionFactor + wordinessFactor + excitementFactor + beggingFactor);
   }
 
-  const living = Object.keys(game.players).filter(
-    id => game.players[id].hp > 0
-  );
-
-  const needsTarget = [
-    "boost_player", "freeze_player", "heal_player",
-    "reverse_controls", "slow_player", "shield_player",
-    "damage_player", "super_boost", "execute_player"
-  ];
-
-  if (needsTarget.includes(ruling.action) &&
-      !living.includes(ruling.target)) {
-    throw new Error("Invalid target from Gemini");
+  /**
+   * Return the list of unlocked actions for the current chaos level.
+   */
+  getAllowedActions(chaosLevel) {
+    let allowed = [{ name: "none", desc: "Do nothing. Reject all arguments.", params: "none" }];
+    for (let tier = 1; tier <= Math.min(4, chaosLevel); tier++) {
+      allowed.push(...ACTION_TIERS[tier]);
+    }
+    if (this.executionUsed) {
+      allowed = allowed.filter(a => a.name !== "execute_player");
+    }
+    return allowed;
   }
 
-  if (ruling.action === "swap_positions" &&
-      (!Array.isArray(ruling.target) ||
-       ruling.target.length !== 2 ||
-       ruling.target[0] === ruling.target[1] ||
-       !ruling.target.every(id => living.includes(id)))) {
-    throw new Error("Invalid swap targets");
+  /**
+   * Process the full pipeline: take player text inputs, generate Jerity's response.
+   */
+  async processPlayerInputs(game, playerInputs) {
+    // Update neediness for each player
+    for (const input of playerInputs) {
+      this.updatePlayerNeediness(input.playerId, input.text);
+    }
+
+    // Calculate effective chaos level
+    const effectiveChaos = Math.min(10, Math.max(1,
+      game.chaosLevel || Math.floor(1 + this.eventCount * 0.6)
+    ));
+
+    const allowedActions = this.getAllowedActions(effectiveChaos);
+    const allowedActionNames = allowedActions.map(a => a.name);
+    const prompt = this.buildPrompt(game, playerInputs, effectiveChaos, allowedActions);
+    const responseSchema = buildResponseSchema(allowedActionNames);
+
+    const startTime = performance.now();
+
+    try {
+      const { result, modelUsed } = await this.callGeminiWithFallback(prompt, responseSchema);
+      const latencyMs = Math.round(performance.now() - startTime);
+
+      // Normalize fields so downstream game code always gets what it expects
+      result.events = (result.events || []).map(e => ({
+        action: e.action || "none",
+        target: e.target ?? null,
+        params: e.params || {},
+        reason: e.reason || "",
+      }));
+      result.latencyMs = latencyMs;
+      result.modelUsed = modelUsed;
+
+      // Update internal state from the response
+      this.eventCount++;
+      this.chaosLevel = result.internalState?.chaosLevel || effectiveChaos;
+      this.mood = result.internalState?.mood || this.mood;
+      this.favoritePlayer = result.internalState?.favoritePlayer ?? this.favoritePlayer;
+      this.grudgePlayer = result.internalState?.grudgePlayer ?? this.grudgePlayer;
+
+      // Track history (keep last 10 in memory, prompt slices last 4)
+      this.history.push({
+        eventIndex: this.eventCount,
+        events: result.events,
+        mood: this.mood,
+      });
+      if (this.history.length > 10) this.history.shift();
+
+      // Check for execution
+      if (result.events.some(e => e.action === "execute_player")) {
+        this.executionUsed = true;
+      }
+
+      return result;
+    } catch (error) {
+      console.error("Verity pipeline exhausted all models:", error.message);
+      const latencyMs = Math.round(performance.now() - startTime);
+      return this.getEmergencyFallbackRuling(effectiveChaos, latencyMs);
+    }
   }
 
-  if (ruling.action === "execute_player" &&
-      (game.chaosLevel < 4 || game.executionUsed)) {
-    throw new Error("Execution not allowed");
+  /**
+   * Calls Gemini with an automatic per-request timeout and model fallback cascade.
+   */
+  async callGeminiWithFallback(prompt, responseSchema) {
+    let lastError = null;
+
+    for (const candidate of MODEL_CANDIDATES) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), candidate.timeoutMs);
+
+      try {
+        const response = await ai.models.generateContent({
+          model: candidate.model,
+          contents: prompt,
+          config: {
+            systemInstruction: JERITY_SYSTEM_INSTRUCTION,
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+            maxOutputTokens: 350,
+            temperature: 0.9,
+            thinkingConfig: candidate.thinkingConfig,
+            abortSignal: controller.signal,
+          },
+        });
+
+        clearTimeout(timer);
+        const parsed = JSON.parse(response.text);
+        return { result: parsed, modelUsed: candidate.model };
+      } catch (err) {
+        clearTimeout(timer);
+        lastError = err;
+        const isTimeout = err.name === "AbortError" || /abort|timeout/i.test(err.message);
+        const reason = isTimeout ? `Timed out after ${candidate.timeoutMs}ms` : err.message;
+        console.warn(`[Verity] ${candidate.model} failed (${reason}). Trying next fallback...`);
+      }
+    }
+
+    throw lastError || new Error("All Gemini models failed or timed out.");
   }
 
-  if (typeof ruling.message !== "string") {
-    throw new Error("Invalid announcement");
+  /**
+   * Build the compact dynamic prompt for the current turn.
+   */
+  buildPrompt(game, playerInputs, chaosLevel, allowedActions) {
+    const actionsStr = allowedActions
+      .map(a => `- ${a.name}: ${a.desc} (${a.params})`)
+      .join("\n");
+
+    const playerStates = Object.entries(game.players || {})
+      .map(([id, p]) => {
+        const need = this.playerNeediness[id];
+        const needStr = need
+          ? `neediness=${need.score.toFixed(1)}, interactions=${need.interactions}`
+          : "neediness=0, interactions=0";
+        return `- "${id}": HP=${p.hp}/${p.maxHp || 100}, alive=${p.hp > 0}, ${needStr}`;
+      })
+      .join("\n");
+
+    const voiceInputsStr = playerInputs.length > 0
+      ? playerInputs.map(inp => `- "${inp.playerId}": "${inp.text}"`).join("\n")
+      : "- (Silence from all players)";
+
+    const historyStr = this.history.length > 0
+      ? this.history.slice(-4).map(h =>
+          `- Round ${h.eventIndex}: mood=${h.mood}, actions=[${h.events?.map(e => `${e.action}->${JSON.stringify(e.target)}`).join(", ")}]`
+        ).join("\n")
+      : "- None yet.";
+
+    let personalityPhase;
+    if (this.eventCount < 3) {
+      personalityPhase = "EARLY GAME: Nice, curious, mostly fair. Dramatic but balanced. Lean toward helping.";
+    } else if (this.eventCount < 8) {
+      personalityPhase = "MID GAME: Unpredictable. Mix help and harm. Develop favorites/grudges. Punish needy begging.";
+    } else {
+      personalityPhase = "LATE GAME: CHAOTIC. Max dramatic flair. Betray allies, make bold theatrical moves.";
+    }
+
+    return `STATE:
+Events=${this.eventCount} | Mood=${this.mood} | Chaos=${chaosLevel}/10 | Fav=${this.favoritePlayer || "none"} | Grudge=${this.grudgePlayer || "none"}
+Phase: ${personalityPhase}
+
+PLAYERS:
+${playerStates || "No player data."}
+
+VOICE INPUTS:
+${voiceInputsStr}
+
+RECENT RULINGS:
+${historyStr}
+
+UNLOCKED ACTIONS:
+${actionsStr}`;
   }
 
-  ruling.message = ruling.message.slice(0, 250);
+  /**
+   * Safe in-character fallback if the user has no internet or all API tiers are down.
+   */
+  getEmergencyFallbackRuling(effectiveChaos, latencyMs) {
+    return {
+      events: [
+        {
+          action: "none",
+          target: null,
+          params: {},
+          reason: "Signal interference in the arena.",
+        },
+      ],
+      voiceLines: [
+        {
+          text: "Your pathetic voices are drowning in static! Entertain me harder next time.",
+          timing: "before_effect",
+        },
+      ],
+      internalState: {
+        mood: this.mood,
+        chaosLevel: effectiveChaos,
+        favoritePlayer: this.favoritePlayer,
+        grudgePlayer: this.grudgePlayer,
+      },
+      latencyMs,
+      modelUsed: "emergency-fallback",
+    };
+  }
+}
 
-  return ruling;
+// ---------------------------------------------------------------------------
+// Convenience: the old askVerity function, now backed by a Verity instance
+// ---------------------------------------------------------------------------
+
+const defaultVerity = new Verity();
+
+/**
+ * One-shot API matching the old interface. For integration, create a Verity
+ * instance instead and call processPlayerInputs() directly.
+ */
+export async function askVerity(game, argumentsList) {
+  const playerInputs = argumentsList.map(arg => ({
+    playerId: arg.playerId || arg.id,
+    text: arg.text || arg.argument || "",
+  }));
+  return defaultVerity.processPlayerInputs(game, playerInputs);
 }

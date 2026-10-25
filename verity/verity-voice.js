@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const dir = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: resolve(dir, ".env") });
+dotenv.config({ path: resolve(dir, "..", ".env") });
 
 export async function speakVerity(message) {
   const response = await fetch("https://api.fish.audio/v1/tts", {
