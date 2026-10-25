@@ -5,7 +5,18 @@ free `sslip.io` name). Vercel can only host the static pages; it can't run the S
 
 **Anyone, after pushing:** `ssh` to the VM, `cd bumper && ./deploy.sh`, then post "deployed <commit>".
 
-## First-time setup (Ubuntu VM, ports 80 and 443 open)
+## Easiest: Render (no VM)
+
+`render.yaml` in the repo root describes the service. On render.com: **New + → Blueprint**, pick this
+repo (the GitHub account must have access to it), **Apply**. You get `https://<name>.onrender.com`
+with HTTPS, so iPhone tilt works. It redeploys on every push to the branch in `render.yaml`.
+
+- Free plan sleeps after 15 min without traffic (about 1 min to wake). During the event, ping
+  `https://<name>.onrender.com/health` every 5 min (UptimeRobot, free), or use the starter plan.
+- Free plan has little CPU: load-test with 4+ phones plus bots before demo day.
+- One instance only (rooms are in memory). Turn off auto-deploy on demo day.
+
+## Alternative: VM (Ubuntu, ports 80 and 443 open)
 
 ```bash
 # Node 20, pm2, Caddy

@@ -1,0 +1,19 @@
+# render.yaml: Render Blueprint for the game server (render.com -> New + -> Blueprint -> this repo).
+# One Node web service: Express serves the built client, Socket.IO runs the game, on Render's PORT.
+# Keep it at ONE instance: rooms live in the server's memory.
+# Free plan sleeps after 15 min without traffic (about 1 min to wake): ping /health every 5 min
+# (e.g. UptimeRobot) during the event, or switch plan to starter for always-on and more CPU.
+services:
+  - type: web
+    name: bumper-brawl
+    runtime: node
+    plan: free
+    region: virginia            # US East, closest to Penn State
+    branch: server/phase-a      # switch to main once the server is merged
+    buildCommand: npm ci --include=dev && npm run build   # Vite is a dev dependency
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true            # turn off on demo day: a push restarts the server and ends rounds
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
