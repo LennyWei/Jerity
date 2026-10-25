@@ -15,10 +15,34 @@ function apply() {
   document.documentElement.style.setProperty('--corrupt', corruption().toFixed(3));
   document.documentElement.dataset.verityStage = String(stageOf(corruption()));
 }
+
+const VISITS_KEY = 'jerity-visits';
+const EXTRA_KEY = 'jerity-corruption';
+const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
+
+export function corruption() {
+  return Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / (MINUTES_TO_FULL * 60));
+}
 export function bumpCorruption(amount) {
   extra = Math.min(1, extra + amount);
   store.set('jerity-corruption', extra.toFixed(3));
   apply();
+}
+
+/** Back to the cheerful start (the game server restarted: a fresh demo). */
+export function resetCorruption() {
+  visits = 1;
+  extra = 0;
+  menuSeconds = 0;
+  store.set(VISITS_KEY, '1');
+  store.set(EXTRA_KEY, '0');
+  apply();
+}
+
+function apply() {
+  const c = corruption();
+  document.documentElement.style.setProperty('--corrupt', c.toFixed(3));
+  document.documentElement.dataset.verityStage = String(stageOf(c));
 }
 apply();
 

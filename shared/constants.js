@@ -54,7 +54,7 @@ export const SPAWN_RADIUS = 220; // fake.js only: it still spawns on a circle
 // Car stats. maxSpeed in m/s, turnRate in rad/s.
 // MVP: everyone drives 'balanced'. 'heavy' and 'light' are post-MVP (car picking).
 export const CARS = {
-  balanced: { label: 'Balanced', hp: 125, density: 1.0, maxSpeed: 14, turnRate: 3.2 },
+  balanced: { label: 'Balanced', hp: 250, density: 1.0, maxSpeed: 14, turnRate: 3.2 },
   heavy:    { label: 'Tank',     hp: 140, density: 1.6, maxSpeed: 11, turnRate: 2.5 },
   light:    { label: 'Dart',     hp: 75,  density: 0.7, maxSpeed: 17, turnRate: 4.0 },
 };
