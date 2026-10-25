@@ -9,7 +9,7 @@ import { C2S, S2C, ROOM_STATE } from '../../../shared/protocol.js';
 import { CONFIG } from '../../../shared/config.js';
 import { createRenderer } from '../render.js';
 import { createInterp } from '../interp.js';
-import { mountVerity, corruption, LINES } from '../verity-ui.js';
+import { mountVerity, corruption, resetCorruption, LINES } from '../verity-ui.js';
 import { connectJerity } from '../jerity-round.js';
 import { victorySplash } from './results.js';
 
@@ -51,6 +51,7 @@ export function mount(root, { net, code, onError }) {
     }),
     net.on(S2C.SNAP, (s) => interp.push(s)),
     net.on(S2C.ROUND_END, (r) => {
+      if (r.final || typeof r.round !== 'number') resetCorruption();
       const name = lobby?.players.find((p) => p.id === r.winnerId)?.name;
       const final = r.final && r.match?.length > 0; // the match is over: final standings by performance score
       const round = typeof r.round === 'number' && !final ? ` round ${r.round}` : '';

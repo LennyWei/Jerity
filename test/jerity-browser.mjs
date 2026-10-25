@@ -107,6 +107,13 @@ try {
   await call('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: false });
   await call('Page.navigate', { url: origin });
   await until("!!document.querySelector('input.field')");
+  assert.equal(await evaluate("!!document.querySelector('.screen .verity .v-face')"), true, 'home face is attached');
+  // Previous visits must not carry corruption into a reload.
+  await evaluate("localStorage.setItem('jerity-visits', '99'); localStorage.setItem('jerity-corruption', '1')");
+  await call('Page.reload');
+  await until("!!document.querySelector('.screen .verity .v-face')");
+  assert.equal(await evaluate("document.documentElement.dataset.verityStage"), '0');
+  assert.ok(Number(await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--corrupt')")) < .05);
   await checkMute('home');
   await evaluate('window.scrollTo(0, document.body.scrollHeight)');
   await checkMute('scrolled home');
@@ -118,6 +125,7 @@ try {
   await until("document.querySelector('.v-mic')?.textContent === 'Mic on'");
   await evaluate("[...document.querySelectorAll('button')].find(b => b.textContent === 'Start').click()");
   await until("document.querySelector('.bb-verity')?.dataset.phase === 'listening'");
+  assert.equal(await evaluate("document.querySelector('.bb-verity .v-phase').textContent"), 'Speak now');
   await checkMute('game');
   const listening = await call('Page.captureScreenshot', { format: 'png' });
   const screenshot = path.join(tmpdir(), 'jerity-listening.png');
@@ -149,9 +157,11 @@ try {
   await until("!document.querySelector('.bb-verity').classList.contains('v-away')");
   await until("getComputedStyle(document.querySelector('.bb-verity .v-eyes')).opacity === '1'");
   const playerId = [...io.sockets.sockets.values()].find(socket => socket.data.code === code).data.pid;
+  await evaluate("document.documentElement.dataset.verityStage = '3'; document.documentElement.style.setProperty('--corrupt', '1')");
   io.to(code).emit(S2C.ROUND_END, { winnerId: playerId,
     leaderboard: [{ id: playerId, name: 'Browser Driver', kills: 0, damage: 0, survived: 10, score: 20 }] });
   await until("!!document.querySelector('.rs')");
+  assert.equal(await evaluate("document.documentElement.dataset.verityStage"), '0', 'game completion resets corruption');
   await checkMute('results');
   const spectator = await call('Target.createTarget', { url: 'about:blank' }, null);
   ({ sessionId } = await call('Target.attachToTarget', { targetId: spectator.targetId, flatten: true }, null));
@@ -159,6 +169,11 @@ try {
   await call('Page.navigate', { url: `${origin}/spectate/${code}` });
   await until("!!document.querySelector('.spectate-verity')");
   await checkMute('spectate');
+  // Simulate an old deployed server without Jerity's lobby field.
+  io.to(code).emit(S2C.LOBBY, { code, state: 'playing', players: [] });
+  await until("document.querySelector('.spectate-verity .v-phase')?.textContent === 'Jerity unavailable'");
+  io.to(code).emit(S2C.JERITY_STATE, { roundId: 'recovered', phase: 'listening', remainingMs: 1000 });
+  await until("document.querySelector('.spectate-verity .v-phase')?.textContent === 'Speak now'");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, recordedClips: captures.length, layout, screenshot, awayScreenshot,
     muteScreens: ['home', 'lobby', 'game', 'results', 'spectate'], cueRequests }));

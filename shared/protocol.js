@@ -37,7 +37,7 @@ export const S2C = {
   SNAP:      'snap',      // Snapshot
   ROUND_END: 'roundEnd',  // RoundEnd
   ERROR:     'err',       // { message }
-  HELLO:     'hello',     // { bootId } on every connect; a new bootId = the server restarted
+  HELLO:     'hello',     // { bootId, jerity?: { protocolVersion, configured, missing } } on connect
 };
 
 // ---------------------------------------------------------------------------

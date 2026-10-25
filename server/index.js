@@ -12,6 +12,7 @@ import { Server } from 'socket.io';
 import { CONFIG } from '../shared/config.js';
 import { JERITY } from '../shared/jerity.js';
 import { createRooms } from './rooms.js';
+import { jerityStatus } from './jerity-status.js';
 
 const PORT = process.env.PORT || 3000;
 if (process.argv.includes('--test-room')) process.env.TEST_ROOM = 'on'; // npm run dev:test (works on Windows too)
@@ -31,7 +32,10 @@ const io = new Server(server, {
 const rooms = createRooms(io);
 
 app.use(express.static(DIST));
-app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.codes() }));
+app.get('/health', (_req, res) => res.json({
+  ok: true, rooms: rooms.codes(), jerity: jerityStatus(),
+  revision: process.env.RENDER_GIT_COMMIT || null,
+}));
 // Client routes like /join/ABCD and /spectate/ABCD all load index.html (once the client has one).
 app.get('*', (_req, res, next) => {
   const index = path.join(DIST, 'index.html');

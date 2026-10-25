@@ -15,6 +15,7 @@ import { roundScore } from './mechanics.js';
 import { botInput } from './bots.js';
 import { VerityPipeline } from '../verity/verity-pipeline.js';
 import { createJerityRound } from './jerity-round.js';
+import { jerityStatus } from './jerity-status.js';
 // Server-only details, not tuning.
 const TEST_CODE = 'TEST';    // always running, matches loop; join it to get a car immediately
 const TEST_BOTS = 3;
@@ -317,7 +318,7 @@ export function createRooms(io, { pipelineFactory = () => new VerityPipeline(), 
   function attach(socket) {
     // The player this socket plays as: its own id, or an earlier one it rejoined as.
     socket.data.pid = socket.id;
-    socket.emit(S2C.HELLO, { bootId: BOOT_ID });
+    socket.emit(S2C.HELLO, { bootId: BOOT_ID, jerity: jerityStatus() });
     const pid = () => socket.data.pid;
     const myRoom = () => rooms.get(socket.data.code);
 

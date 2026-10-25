@@ -9,11 +9,9 @@ const VISITS_KEY = 'jerity-visits';
 const EXTRA_KEY = 'jerity-corruption';
 const MINUTES_TO_FULL = 6;   // menus alone take this long to go fully wrong
 
-let visits = (Number(store.get(VISITS_KEY, '0')) || 0) + 1;
-store.set(VISITS_KEY, String(visits));
-let extra = Number(store.get(EXTRA_KEY, '0')) || 0, menuSeconds = 0;
+let extra = 0, menuSeconds = 0;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-export const corruption = () => Math.min(1, Math.min(0.45, (visits - 1) * 0.08) + extra + menuSeconds / (MINUTES_TO_FULL * 60));
+export const corruption = () => Math.min(1, extra + menuSeconds / (MINUTES_TO_FULL * 60));
 export const stageOf = c => c < 0.25 ? 0 : c < 0.5 ? 1 : c < 0.75 ? 2 : 3;
 function apply() {
   document.documentElement.style.setProperty('--corrupt', corruption().toFixed(3));
@@ -22,13 +20,11 @@ function apply() {
 
 export function bumpCorruption(amount) {
   extra = Math.min(1, extra + amount);
-  store.set(EXTRA_KEY, extra.toFixed(3));
   apply();
 }
 
-/** Back to the cheerful start (the game server restarted: a fresh demo). */
+/** Corruption belongs to this game only; refreshes and completed matches start cheerful. */
 export function resetCorruption() {
-  visits = 1;
   extra = 0;
   menuSeconds = 0;
   store.set(VISITS_KEY, '1');
@@ -37,7 +33,7 @@ export function resetCorruption() {
 }
 
 
-apply();
+resetCorruption();
 
 // Drop recordings into client/public/audio/jerity. Missing menu clips stay silent.
 export const LINES = { home: 'home', lobby: 'lobby', match: 'match', spectate: 'spectate', results: 'results' };
@@ -64,9 +60,11 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
     <div class="v-controls">
       ${microphone ? '<button class="v-mic" type="button"></button>' : ''}
     </div>
+    <span class="v-phase" aria-hidden="true"></span>
     <span class="v-status" role="status" aria-live="polite"></span>`;
   const face = el.querySelector('.v-face'), mouth = el.querySelector('.v-mouth');
   const pupils = [...el.querySelectorAll('.v-pupil')], status = el.querySelector('.v-status');
+  const phaseLabel = el.querySelector('.v-phase');
   // A body-level control stays in the viewport corner despite screen transforms and scrolling.
   const sound = document.createElement('button');
   sound.className = 'v-sound v-corner-sound';
@@ -108,6 +106,7 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
   function refreshMic() {
     if (!mic || !alive) return;
     const enabled = microphoneEnabled();
+    if (phase === 'listening') phaseLabel.textContent = enabled ? 'Speak now' : 'Enable mic to speak';
     mic.textContent = enabled ? 'Mic on' : 'Enable mic';
     mic.setAttribute('aria-pressed', String(enabled));
     mic.title = enabled ? 'Disable microphone' : 'Let Jerity listen for 4.5 seconds after each countdown';
@@ -179,7 +178,10 @@ export function mountVerity(el, { lines = 'match', quiet = false, microphone = f
     phase = next.phase || 'idle'; mood = next.mood || mood;
     focusId = phase === 'idle' ? null : next.focusId || null;
     el.dataset.phase = phase;
-    status.textContent = phase === 'inviting' ? 'Jerity is about to listen.'
+    phaseLabel.textContent = ({ inviting: 'Get ready', listening: microphone && !microphoneEnabled() ? 'Enable mic to speak' : 'Speak now',
+      uploading: 'Thinking', thinking: 'Thinking', unavailable: 'Jerity unavailable' })[phase] || '';
+    status.textContent = phase === 'unavailable' ? 'Jerity is unavailable on this game server.'
+      : phase === 'inviting' ? 'Jerity is about to listen.'
       : phase === 'listening' ? 'Jerity is listening. Make your case now.'
       : phase === 'thinking' || phase === 'uploading' ? 'Jerity is deciding.'
       : phase === 'idle' ? 'Jerity is watching.' : 'Jerity has made his decision.';

@@ -55,10 +55,12 @@ function showLobby() {
 function showGame(countdown = null) {
   show('game', (root) => game.mount(root, {
     net, playerId: session.playerId, lobby: session.lobby, countdown,
-    // Verity wears down once per game: after a match's last round (or a lone round from an older server).
-    onRoundEnd: (result) => (bumpCorruption(result.final || typeof result.round !== 'number' ? 0.06 : 0), show('results', (r) => results.mount(r, {
-      result, lobby: session.lobby, playerId: session.playerId, onPlayAgain: showLobby,
-    }))),
+    onRoundEnd: (result) => {
+      if (result.final || typeof result.round !== 'number') resetCorruption();
+      show('results', (r) => results.mount(r, {
+        result, lobby: session.lobby, playerId: session.playerId, onPlayAgain: showLobby,
+      }));
+    },
   }));
 }
 

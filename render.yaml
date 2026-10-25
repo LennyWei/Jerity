@@ -9,13 +9,22 @@ services:
     runtime: node
     plan: free
     region: virginia            # US East, closest to Penn State
-    branch: server/phase-a      # switch to main once the server is merged
+    branch: main               # deploy the same branch as the Vercel client
     buildCommand: npm ci --include=dev && npm run build   # Vite is a dev dependency
     startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true            # turn off on demo day: a push restarts the server and ends rounds
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
       - key: TEST_ROOM          # no always-on bot room in production: its physics would eat the free plan's CPU
         value: "off"
+      # These belong on the Render server, not in public VITE_* frontend variables.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FISH_AUDIO_API_KEY
+        sync: false
+      - key: FISH_AUDIO_VOICE_ID
+        sync: false

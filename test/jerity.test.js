@@ -10,10 +10,27 @@ import { createRooms } from '../server/rooms.js';
 import { VerityPipeline } from '../verity/verity-pipeline.js';
 import { C2S, S2C, BUFF } from '../shared/protocol.js';
 import { JERITY } from '../shared/jerity.js';
+import { jerityStatus } from '../server/jerity-status.js';
 
 const limits = { ...JERITY, LISTEN_MS: 20, UPLOAD_GRACE_MS: 10, PLAYBACK_TIMEOUT_MS: 80, PIPELINE_TIMEOUT_MS: 100 };
 const roster = [{ id: 'a', name: 'Alice' }, { id: 'b', name: 'Bob' }];
 const recording = { audioBase64: Buffer.from('audio fixture').toString('base64'), mimeType: 'audio/webm;codecs=opus' };
+
+test('backend diagnostics report missing configuration without exposing secrets', () => {
+  const keys = ['GROQ_API_KEY', 'GEMINI_API_KEY', 'FISH_AUDIO_API_KEY', 'FISH_AUDIO_VOICE_ID'];
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    keys.forEach(key => { delete process.env[key]; });
+    assert.deepEqual(jerityStatus(), { protocolVersion: 1, configured: false, missing: keys });
+    keys.forEach(key => { process.env[key] = 'test-secret-value'; });
+    assert.deepEqual(jerityStatus(), { protocolVersion: 1, configured: true, missing: [] });
+    assert.ok(!JSON.stringify(jerityStatus()).includes('test-secret-value'));
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
 const ruling = () => ({
   events: [{ action: 'boost_player', target: 'a', params: { duration: 3 } }],
   internalState: { mood: 'playful' },
@@ -116,13 +133,13 @@ test('missing playback acknowledgments have a deadline', async () => {
 });
 
 test('listening clips alternate by round, and recording stays closed until the cue completes', async () => {
-  for (const roundNumber of [1, 2, 3]) {
+  for (const [roundNumber, clipNumber] of [[1, 1], [2, 2], [3, 3], [4, 1]]) {
     const { cycle, events, listening } = setup({ roundNumber });
     const running = cycle.start();
     assert.equal(cycle.state().phase, 'inviting');
     assert.ok(cycle.submit('a', { roundId: cycle.state().roundId, ...recording }).error);
     const cue = events.find(event => event.type === S2C.JERITY_VOICE).payload;
-    assert.equal(cue.url, `/audio/jerity/listening-${roundNumber === 2 ? 2 : 1}.mp3`);
+    assert.equal(cue.url, `/audio/jerity/listening-${clipNumber}.mp3`);
     await listening;
     assert.equal(cycle.state().phase, 'listening');
     assert.equal(cycle.submit('a', { roundId: cycle.state().roundId, ...recording }).ok, true);

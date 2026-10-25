@@ -26,6 +26,11 @@
   padding: 0; border-radius: 50%; font-size: 16px; pointer-events: auto; }
 .v-controls button:focus-visible, .v-corner-sound:focus-visible { outline: 3px solid #71e9b5; outline-offset: 3px; }
 .v-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.v-phase { color: #f6b93b; font: 700 11px system-ui, sans-serif; text-shadow: 0 1px 3px #000; }
+.v-phase:empty { display: none; }
+.verity[data-phase="listening"] .v-phase { color: #71e9b5; }
+.verity[data-phase="unavailable"] .v-phase { color: #ff8c91; }
+.verity[data-phase="unavailable"] .v-halo { opacity: .8; stroke: #ff8c91; }
 .bb-verity .v-face, .spectate-verity .v-face { width: clamp(62px, 12vh, 104px); }
 @keyframes jerity-listen { 50% { transform: scale(1.06); opacity: .45; } }
 @keyframes jerity-think { to { transform: rotate(360deg); } }

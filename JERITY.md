@@ -1,5 +1,38 @@
 # Jerity integration
 
+## Production: deploy both services
+
+Vercel serves the client. The deployed client connects to the separate Render
+service at `https://bumper-brawl-nkcw.onrender.com`. A Vercel deploy does not update
+the game server or its AI pipeline.
+
+Deploy the current `main` branch to **both** services. The old Render Blueprint
+pointed at `server/phase-a`; it now points at `main`. Check the existing Render
+service's branch in its dashboard as well (editing this file alone does not change
+a manually configured service). Render's start command must be `npm start`, which
+runs `server/index.js`, not either fake server.
+
+In the Render service's Environment settings, provide `GROQ_API_KEY`,
+`GEMINI_API_KEY`, `FISH_AUDIO_API_KEY`, and `FISH_AUDIO_VOICE_ID` as secrets. Adding
+them only to Vercel will not configure the Render process. For an existing Render
+Blueprint, newly added `sync: false` variables must be filled in manually.
+See https://render.com/docs/configure-environment-variables.
+
+After deploying, `/health` on Render should include `jerity.protocolVersion: 1`
+and `jerity.configured: true`; `jerity.missing` lists only missing variable names.
+`revision` identifies the deployed Render commit. Vercel's `VITE_SERVER_URL`
+must point to that Render service at build time. Reload the page and create a new
+room after restarting the backend; rooms are held in memory.
+
+An older backend without Jerity state now shows **Jerity unavailable** instead of
+silently remaining idle. **Enable mic** is still required to opt into recording.
+The **Speak now** cue appears when the shared listening window opens.
+
+Corruption starts fresh on every page reload and resets when a match finishes
+(including the spectator view). It no longer accumulates across page visits.
+
+## Local setup
+
 Run `npm start` with a built client (`npm run build`), or run `npm run dev` and
 `npm run dev:client` together. For phones use `npm run dev:phone` so microphone
 access has HTTPS. Plain HTTP on a LAN IP cannot capture a microphone.
@@ -10,8 +43,8 @@ and Fish Audio model remain configured in `verity/verity.js` and
 `verity/verity-voice.js`.
 
 Players opt in using **Enable mic** in the lobby or above the arena. After each
-countdown, Jerity plays one of two alternating listening invitations
-(`listening-1.mp3` / `listening-2.mp3`, under four seconds each), then the server
+countdown, Jerity cycles through the three listening invitations
+(`listening-1.mp3` / `listening-2.mp3` / `listening-3.mp3`, under four seconds each), then the server
 opens one shared 4.5-second listening window. Missing invitation clips stay silent.
 A green halo
 means speak; a violet halo means Jerity is deciding. The microphone is released
