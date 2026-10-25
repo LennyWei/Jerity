@@ -356,8 +356,8 @@ export function createRooms(io) {
   // Always-on TEST room: bots looping rounds
   // ---------------------------------------------------------------------------
 
-  // TEST_ROOM=off (production, see render.yaml): its bots would use CPU nobody is watching.
-  if (process.env.TEST_ROOM !== 'off') {
+  // Off unless TEST_ROOM=on: its bots use CPU nobody is watching (the free Render plan has little).
+  if (process.env.TEST_ROOM === 'on') {
     const test = newRoom(TEST_CODE, null, true);
     for (let i = 1; i <= TEST_BOTS; i++) addPlayer(test, `bot${botSeq++}`, `Bot ${i}`, true);
     startCountdown(test);

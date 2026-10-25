@@ -28,7 +28,7 @@ Out until FFA is done: team modes (2v2/3v3/4v4), car picking, items/perks, parry
 
 ```
 npm install
-npm run dev           # real server on :3000, restarts on file changes; room TEST always running with 3 bots
+npm run dev           # real server on :3000, restarts on file changes (TEST_ROOM=on adds the always-on TEST bot room)
 npm start             # same without watching (what pm2 runs)
 npm run sim           # one headless round through game.js, no sockets; prints events
 npm run fake          # fake server on :3000 (same port: run one or the other)
@@ -38,7 +38,7 @@ npm run dev:phone     # same over HTTPS (self-signed) so phones allow motion sen
 npm run build         # client -> client/dist, which the server serves
 ```
 
-Env vars: `PORT` (server, default 3000); `SERVER` and `CODE` (fake client, defaults `http://localhost:3000` and `TEST`). `/health` returns `{ ok, rooms }`.
+Env vars: `PORT` (server, default 3000); `TEST_ROOM=on` (real server: run room TEST, off by default); `SERVER` and `CODE` (fake client, defaults `http://localhost:3000` and `TEST`). `/health` returns `{ ok, rooms }`.
 
 There is no test runner or linter; testing is `npm run sim`, the fake client, and checking by hand (see Testing).
 
@@ -67,7 +67,7 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
 
 ## Building the real server
 
-Status (Oct 24 night): all five steps are done and tested on branch `server/phase-a`, plus knockback (cars and walls), edge spawns, the 4-pillar map, and Person 2's tilt-only controls (`DRIVE_MODE` 'omni' by default, 'car' optional; design.md section 4). `npm run sim` checks both modes. Disconnects: 15 s ghost + rejoin by key; `TEST_ROOM=off` skips the TEST room (Render sets it) (design.md section 8). Left: tuning on phones.
+Status (Oct 24 night): all five steps are done and tested on branch `server/phase-a`, plus knockback (cars and walls), edge spawns, the 4-pillar map, and Person 2's tilt-only controls (`DRIVE_MODE` 'omni' by default, 'car' optional; design.md section 4). `npm run sim` checks both modes. Disconnects: 15 s ghost + rejoin by key (design.md section 8); the TEST room is off unless `TEST_ROOM=on`. Left: tuning on phones.
 
 1. **`rooms.js`:** lift room logic from `fake.js` as-is (codes, join/leave, colors, ready, host start, countdown, round end, scoring, TEST room). It already matches the contract.
 2. **`game.js`:** replace `stepCar` and `fakeEvents` with a Planck world per room:
