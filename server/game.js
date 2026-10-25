@@ -228,24 +228,14 @@ export function createGame(players) {
       b.applyLinearImpulse(Vec2.mul(right, -lat * mass * CONFIG.GRIP), b.getWorldCenter());
     }
 
-<<<<<<< Updated upstream
-    // Throttle: instant launch to MIN_SPEED, plus engine force up to max speed. Both in the
-    // same tick: a turning car's forward speed dips just under MIN_SPEED every tick, and with
-    // launch-or-engine it would be relaunched forever and never speed up.
-    if (input.accel && !knocked) {
-      b.setLinearDamping(0);
-      const maxSpeed = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1);
-      const fwdSpeed = Vec2.dot(fwd, b.getLinearVelocity());
-      if (fwdSpeed < CONFIG.MIN_SPEED) {
-        b.applyLinearImpulse(Vec2.mul(fwd, (CONFIG.MIN_SPEED - fwdSpeed) * mass), b.getWorldCenter());
-      }
-      if (Math.max(fwdSpeed, CONFIG.MIN_SPEED) < maxSpeed) {
-        b.applyForceToCenter(Vec2.mul(fwd, CONFIG.ENGINE * mass * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1)));
-=======
     // Throttle, -1..1 (phones tilt forward/back; bots and old clients send accel = full forward).
-    // Forward: partial throttle cruises at that fraction of top speed; quick launch to MIN_SPEED.
+    // Just knocked back: no throttle until the knock plays out.
+    // Forward: partial throttle cruises at that fraction of top speed. Instant launch to
+    // MIN_SPEED plus engine force in the same tick: a turning car's forward speed dips just
+    // under MIN_SPEED every tick, and with launch-or-engine it would be relaunched forever and
+    // never speed up.
     // Back: brake while still rolling forward, then reverse up to REVERSE_MAX_SPEED.
-    const throttle = Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0;
+    const throttle = knocked ? 0 : Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0;
     const fwdSpeed = Vec2.dot(fwd, b.getLinearVelocity());
     const push = (accel) => b.applyForceToCenter(Vec2.mul(fwd, accel * mass));
     if (throttle > 0) {
@@ -254,9 +244,9 @@ export function createGame(players) {
       b.setLinearDamping(fwdSpeed > target ? CONFIG.COAST_DAMPING : 0); // eased off: roll down to the new cruise speed
       if (fwdSpeed < launch) {
         b.applyLinearImpulse(Vec2.mul(fwd, (launch - fwdSpeed) * mass), b.getWorldCenter());
-      } else if (fwdSpeed < target) {
+      }
+      if (Math.max(fwdSpeed, launch) < target) {
         push(CONFIG.ENGINE * (boosted ? CONFIG.BOOST_ENGINE_MULT : 1));
->>>>>>> Stashed changes
       }
     } else if (throttle < 0) {
       b.setLinearDamping(0);
@@ -294,8 +284,9 @@ export function createGame(players) {
     const b = car.body;
     const mass = b.getMass();
     const v = b.getLinearVelocity();
-    const wx = Number(input.tilt) || 0;
-    const wy = -(Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0); // forward = -y
+    const knocked = now < car.knockUntil; // just knocked back: no control until it plays out
+    const wx = knocked ? 0 : Number(input.tilt) || 0;
+    const wy = knocked ? 0 : -(Number.isFinite(input.throttle) ? input.throttle : input.accel ? 1 : 0); // forward = -y
     const want = Math.min(1, Math.hypot(wx, wy));
     const maxSpeed = spec.maxSpeed * (boosted ? CONFIG.BOOST_SPEED_MULT : 1);
 
