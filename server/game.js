@@ -13,7 +13,7 @@
 import { World, Vec2, Box, Circle, Edge } from 'planck';
 import { CAR_STATE, EVENT, BUFF, packCar } from '../shared/protocol.js';
 import {
-  ARENA, SCALE, CAR_SIZE, OBSTACLES, SPAWN_RADIUS, CARS, DEFAULT_CAR,
+  ARENA, SCALE, CAR_SIZE, OBSTACLES, SPAWN_POINTS, CARS, DEFAULT_CAR,
 } from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { carHit, wallHit, flipTick, killReward, liveScore } from './mechanics.js';
@@ -35,7 +35,7 @@ export function createGame(players) {
   let lastSnapT = 0;
 
   buildArena();
-  players.forEach((p, i) => addCar(p.id, (2 * Math.PI * i) / players.length));
+  players.forEach((p, i) => addCar(p.id, SPAWN_POINTS[i % SPAWN_POINTS.length]));
 
   // ---------------------------------------------------------------------------
   // Round API (rooms.js and sim.js)
@@ -66,9 +66,11 @@ export function createGame(players) {
     };
   }
 
-  /** Mid-round join (bot rooms only): a random spot on the spawn circle. */
+  /** Mid-round join (bot rooms only): the spawn point farthest from every car still in the round. */
   function spawn(p) {
-    addCar(p.id, Math.random() * 2 * Math.PI);
+    const others = aliveCars();
+    const room = s => Math.min(...others.map(c => Math.hypot(c.x - s.x, c.y - s.y)));
+    addCar(p.id, SPAWN_POINTS.reduce((best, s) => (room(s) > room(best) ? s : best)));
   }
 
   function remove(id) {
@@ -135,15 +137,15 @@ export function createGame(players) {
     });
   }
 
-  // On the spawn circle at angle `ang`, facing the center.
-  function addCar(id, ang) {
+  // At a spawn point (world units), facing the center.
+  function addCar(id, spot) {
     const spec = CARS[DEFAULT_CAR]; // MVP: everyone drives balanced
     const car = {
       id,
       body: null,               // set below; null once dead
-      x: ARENA.W / 2 + SPAWN_RADIUS * Math.cos(ang), // world units, copied from the body after every step
-      y: ARENA.H / 2 + SPAWN_RADIUS * Math.sin(ang),
-      a: wrapAngle(ang + Math.PI),
+      x: spot.x,                // world units, copied from the body after every step
+      y: spot.y,
+      a: Math.atan2(ARENA.H / 2 - spot.y, ARENA.W / 2 - spot.x),
       hp: spec.hp,
       maxHp: spec.hp,
       s: CAR_STATE.ALIVE,
@@ -294,36 +296,39 @@ export function createGame(players) {
       applyDamage(attacker, hit.dmgToAttacker, null);
       if (dmg > 0) events.push({ type: EVENT.HIT, attacker: attacker.id, victim: victim.id, dmg, kind: hit.kind });
     }
-    knockApart(a, b, n, hit.type === 'headon' ? CONFIG.HEADON_KNOCKBACK_SPEED : CONFIG.KNOCKBACK_SPEED);
+    const speed = hit.type === 'headon' ? CONFIG.HEADON_KNOCKBACK_SPEED : CONFIG.KNOCKBACK_SPEED;
+    knock(a, Vec2.neg(n), speed);
+    knock(b, n, speed);
     checkDeath(a);
     checkDeath(b);
-  }
-
-  // Pushes two cars apart along the hit (n points from a to b), at least `speed` each, and takes
-  // away their throttle and grip for KNOCKBACK_MS so the push plays out. Without it the instant
-  // launch drives the rammer straight back in and grip cancels the sideways push, so cars grind,
-  // slide along each other, and keep getting hit (head-ons: concussed again right after the stun).
-  function knockApart(a, b, n, speed) {
-    for (const [car, out] of [[a, -1], [b, 1]]) {
-      const v = car.body.getLinearVelocity();
-      const along = Vec2.dot(v, n);
-      const target = out * Math.max(speed, out * along); // keep a bounce that is already faster
-      car.body.setLinearVelocity(Vec2.add(v, Vec2.mul(n, target - along)));
-      car.knockUntil = now + CONFIG.KNOCKBACK_MS;
-    }
   }
 
   function wallContact({ a, b, n, vA, vB }) {
     const car = a || b;
     if (car.s === CAR_STATE.DEAD) return;
-    // n points from A to B, so "into the wall" is +n when the car is A and -n when it is B.
-    const impact = a ? Math.max(0, Vec2.dot(vA, n)) : Math.max(0, -Vec2.dot(vB, n));
-    const hit = wallHit(impact);
-    if (!hit || coolingDown(`${car.id}|wall`)) return;
-    car.body.setLinearVelocity(Vec2.mul(car.body.getLinearVelocity(), hit.speedKeep));
-    const dmg = applyDamage(car, hit.dmg, null);
-    events.push({ type: EVENT.WALL, id: car.id, dmg });
+    // n points from A to B, so "away from the wall" is -n when the car is A and +n when it is B.
+    const away = a ? Vec2.neg(n) : n;
+    const impact = Math.max(0, -Vec2.dot(a ? vA : vB, away));
+    if (impact < CONFIG.MIN_IMPACT_SPEED || coolingDown(`${car.id}|wall`)) return;
+    const hit = wallHit(impact); // a real crash: lose speed and some HP
+    if (hit) {
+      car.body.setLinearVelocity(Vec2.mul(car.body.getLinearVelocity(), hit.speedKeep));
+      const dmg = applyDamage(car, hit.dmg, null);
+      events.push({ type: EVENT.WALL, id: car.id, dmg });
+    }
+    knock(car, away, CONFIG.WALL_KNOCKBACK_SPEED); // every bump: bounce off instead of grinding
     checkDeath(car); // credits lastAttacker if within KILL_CREDIT_MS
+  }
+
+  // Sends a car away from what it hit (`away` is a unit vector) at `speed` or faster, and takes
+  // away its throttle and grip for KNOCKBACK_MS so the push plays out. Without it the instant
+  // launch drives it straight back in and grip cancels a sideways push: cars grind into walls and
+  // each other, slide along each other, and get hit again (head-ons: concussed again after the stun).
+  function knock(car, away, speed) {
+    const v = car.body.getLinearVelocity();
+    const out = Vec2.dot(v, away);
+    car.body.setLinearVelocity(Vec2.add(v, Vec2.mul(away, Math.max(speed, out) - out))); // keep a faster bounce
+    car.knockUntil = now + CONFIG.KNOCKBACK_MS;
   }
 
   // ---------------------------------------------------------------------------

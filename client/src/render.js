@@ -305,12 +305,6 @@ export function createRenderer(canvas, opts = {}) {
     for (let y = 50; y < H; y += 50) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(W / 2, H / 2, 220, 0, Math.PI * 2);
-    ctx.stroke();
-
     // Walls: rubber bumper with hazard dashes
     ctx.lineWidth = 8;
     ctx.strokeStyle = '#2b3242';

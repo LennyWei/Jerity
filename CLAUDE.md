@@ -67,7 +67,7 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
 
 ## Building the real server
 
-Status (Oct 24 evening): steps 1, 2, 3 and 5 are done and tested on branch `server/phase-a`; step 4 (bots) is still the circle-driving stand-in. Left: bots, disconnect grace period (`DISCONNECT_GRACE_MS`), tuning on phones.
+Status (Oct 24 night): all five steps are done and tested on branch `server/phase-a`, plus knockback (cars and walls), edge spawns and the 4-pillar map. Left: disconnect grace period (`DISCONNECT_GRACE_MS`), tuning on phones.
 
 1. **`rooms.js`:** lift room logic from `fake.js` as-is (codes, join/leave, colors, ready, host start, countdown, round end, scoring, TEST room). It already matches the contract.
 2. **`game.js`:** replace `stepCar` and `fakeEvents` with a Planck world per room:

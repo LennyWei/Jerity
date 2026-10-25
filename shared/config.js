@@ -49,7 +49,8 @@ export const CONFIG = {
   // Walls and obstacles (lose speed + small self-damage)
   WALL_RESTITUTION: 0.3,
   OBSTACLE_RESTITUTION: 0.8,
-  WALL_MIN_SPEED: 3,     // slower touches are free
+  WALL_MIN_SPEED: 5,     // slower touches are free (above the 4 m/s launch, so pressing on a wall costs nothing)
+  WALL_KNOCKBACK_SPEED: 2, // m/s off a wall or pillar after any bump of MIN_IMPACT_SPEED or more, so holding accel bounces instead of grinding
   WALL_SPEED_KEEP: 0.35, // keep 35% of speed after a hit
   WALL_DMG_K: 0.08,      // self-damage = WALL_DMG_K * impactSpeed^2 (about 16 HP at full speed)
 
@@ -73,6 +74,7 @@ export const CONFIG = {
   // Server bots (testing alone and the TEST room)
   BOT_TILT_MAX: 0.7,     // below FLIP_TILT, so bots never tip over
   BOT_STEER_GAIN: 2,     // tilt per radian off target (full lock at 20 degrees off)
+  BOT_FLANK_DIST: 4,     // m: when the target faces the bot, aim this far beside it (swing into its side, not a head-on)
 
   // Phone tilt. Measured as how far the phone's long edge tilts from level, which works for
   // a steering-wheel grip and a flat controller grip alike (see wheelAngle in input.js).

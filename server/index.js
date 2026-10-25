@@ -31,6 +31,13 @@ app.get('*', (_req, res, next) => {
 
 io.on('connection', rooms.attach);
 
+server.on('error', (err) => {
+  if (err.code !== 'EADDRINUSE') throw err;
+  console.error(`Port ${PORT} is already in use: another game server (npm run dev, npm start or npm run fake) `
+    + 'is still running. Stop it first (Ctrl+C in its terminal), or set PORT to another port.');
+  process.exit(1);
+});
+
 server.listen(PORT, () => {
   console.log(`Bumper Brawl server on http://localhost:${PORT}  (room TEST is always running)`);
 });

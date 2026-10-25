@@ -11,13 +11,23 @@ export const MAX_PLAYERS = 8;
 export const NAME_MAX = 12; // longer player names are cut by the server
 
 // Static pillars (world units). Hitting one costs speed and a little HP, like a wall.
+// Four pillars in the gaps between the spawn lanes: the middle stays open for clashes, and the
+// straight drive from every spawn point to the center misses them (by 100+ units).
 export const OBSTACLES = [
-  { x: 500, y: 300, r: 45 },
-  { x: 260, y: 170, r: 30 },
-  { x: 740, y: 430, r: 30 },
+  { x: 396, y: 129, r: 32 },
+  { x: 604, y: 129, r: 32 },
+  { x: 396, y: 471, r: 32 },
+  { x: 604, y: 471, r: 32 },
 ];
 
-export const SPAWN_RADIUS = 220; // cars spawn on this circle facing the center
+// Where cars start (world units), facing the center. Corners first, then the middle of each
+// edge, so any number of players is spread out (2 players: opposite corners; 4: all corners).
+export const SPAWN_POINTS = [
+  { x: 90, y: 90 }, { x: 910, y: 510 }, { x: 910, y: 90 }, { x: 90, y: 510 },
+  { x: 70, y: 300 }, { x: 930, y: 300 }, { x: 500, y: 70 }, { x: 500, y: 530 },
+];
+
+export const SPAWN_RADIUS = 220; // fake.js only: it still spawns on a circle
 
 // Car stats. maxSpeed in m/s, turnRate in rad/s.
 // MVP: everyone drives 'balanced'. 'heavy' and 'light' are post-MVP (car picking).

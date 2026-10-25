@@ -126,9 +126,9 @@ Events:
 - Arena: flat and closed, **1000 x 600 world units**. Planck scale: `SCALE = 20` units per meter, so the Planck world is 50 x 30 m. Small enough that 8 cars can't avoid each other.
 - Top-down: world gravity `(0, 0)`.
 - Walls: four static edge bodies.
-- Obstacles: 3 static pillars (`OBSTACLES` in `constants.js`).
+- Obstacles: 4 static pillars in the gaps between the spawn lanes, leaving the middle open for clashes (`OBSTACLES` in `constants.js`).
 - Car body: dynamic box 40 x 24 units, density from car stats, restitution 0.5.
-- Spawns: evenly spaced on a circle of radius 220 around the center, facing the center.
+- Spawns: `SPAWN_POINTS` on the edges, corners first, then the middle of each edge (2 players: opposite corners; 4: all corners), facing the center. The drive from every spawn point to the middle misses the pillars.
 
 ### Tick loop (30 Hz, fixed timestep `dt = 1/30`)
 For each car:
@@ -194,6 +194,7 @@ Why this works: hitting someone's side or rear at speed is the best play, a head
 
 On contact with a wall or pillar where impact speed (velocity into the surface) ≥ `WALL_MIN_SPEED`:
 - Speed is multiplied by `WALL_SPEED_KEEP` (keep 35%).
+- Any bump of `MIN_IMPACT_SPEED` or more (even under `WALL_MIN_SPEED`) knocks the car off the surface at `WALL_KNOCKBACK_SPEED`, with no throttle or grip for `KNOCKBACK_MS`. `WALL_MIN_SPEED` is above the 4 m/s launch, so holding accel against a wall bounces off it for free instead of grinding HP away.
 - Self-damage `WALL_DMG_K * impactSpeed²` (about 16 HP at full speed, about 1 HP at a gentle bump). Emit `wall`.
 - If this kills the car within `KILL_CREDIT_MS` of being hit by someone, that player gets the kill.
 
@@ -315,7 +316,7 @@ Send `input` at 30 Hz with the accumulated tap count, then reset it.
 - Disconnect during play: the car keeps zero input for `DISCONNECT_GRACE_MS`, then is removed (counts as dead, no kill credit).
 
 ### Bots (`/server/bots.js`)
-`bots: 3` on `createRoom` adds 3 server-side players. MVP bots steer toward the nearest car with full accel and moderate tilt (they never flip). Essential for testing collisions with one or two phones and for tuning alone.
+`bots: 3` on `createRoom` adds 3 server-side players. MVP bots steer toward the nearest car with full accel and moderate tilt (they never flip). When the target faces a bot, the lower id of the two aims `BOT_FLANK_DIST` beside it instead, so bots swerve into side hits rather than head-on double KOs or circling each other; with the target behind it, a bot lets off the throttle to turn tighter. Essential for testing collisions with one or two phones and for tuning alone.
 
 ---
 

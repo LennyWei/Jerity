@@ -2,14 +2,16 @@
 // Checks the game headless (no sockets, no waiting) in a terminal:
 //   1. Driving: launch, top speed, coasting, turning, grip, tip-over, bounces, no pass-through.
 //   2. Hits and walls: side vs rear vs head-on, speed scaling, stun, wall penalty, kill reward.
-//   3. One bot round, printing the events.
+//   3. Knockback, the map (spawn lanes), and bots, then one bot round printing the events.
 // Each check compares a measured number with what design.md and config.js say it should be.
 //
 // Run: npm run sim   (exits 1 if a check fails)
 
 import { Vec2 } from 'planck';
 import { CAR_STATE, EVENT, HIT_KIND, BUFF } from '../shared/protocol.js';
-import { MIN_PLAYERS, SCALE, CAR_SIZE, CARS, DEFAULT_CAR } from '../shared/constants.js';
+import {
+  ARENA, MIN_PLAYERS, SCALE, CAR_SIZE, CARS, DEFAULT_CAR, OBSTACLES, SPAWN_POINTS,
+} from '../shared/constants.js';
 import { CONFIG } from '../shared/config.js';
 import { createGame } from './game.js';
 import { botInput } from './bots.js';
@@ -92,7 +94,7 @@ console.log('Driving (design.md section 4)');
 }
 {
   const tilt = 0.8; // just under FLIP_TILT
-  const { game, cars: [car] } = setup({ x: 30, y: 3, v: spec.maxSpeed });
+  const { game, cars: [car] } = setup({ x: 40, y: 3, v: spec.maxSpeed }); // turns inside x 34-47, y 3-14
   const p0 = Vec2.clone(car.body.getPosition());
   run(game, [{ tilt, accel: true, taps: 0 }], CONFIG.TICK_HZ);
   const turned = car.body.getAngle();
@@ -106,7 +108,7 @@ console.log('Driving (design.md section 4)');
   check(`tilt ${tilt} at top speed never flips`, car.s === CAR_STATE.ALIVE, `state ${car.s}`);
 }
 {
-  const { game, cars: [car] } = setup({ x: 30, y: 3, v: spec.maxSpeed });
+  const { game, cars: [car] } = setup({ x: 40, y: 3, v: spec.maxSpeed }); // turns inside x 34-47, y 3-14
   const flipTick = run(game, [{ tilt: 1, accel: true, taps: 0 }], CONFIG.TICK_HZ,
     () => game.snapshot().events.some(e => e.type === EVENT.FLIP));
   near('full tilt at top speed: time to flip', flipTick * dt, CONFIG.FLIP_HOLD_MS / 1000, 0.05, 's');
@@ -117,16 +119,17 @@ console.log('Driving (design.md section 4)');
 }
 
 console.log('\nBounces and collisions');
+// Under MIN_IMPACT_SPEED a bump is not a crash: no knockback, only Planck's bounce at the
+// surface's own restitution (Planck doesn't bounce at all under 1 m/s). Noses 0.5 m away.
+const SLOW = CONFIG.MIN_IMPACT_SPEED * 0.9;
 {
-  // A hard hit bounces at the surface's restitution, then keeps WALL_SPEED_KEEP of that speed.
-  const { game, cars: [car] } = setup({ x: 44, y: 3, v: 12 }); // nose toward the right wall
-  near('wall bounce (restitution x speed kept)', bounceRatio(game, [COAST], () => -vx(car)),
-    CONFIG.WALL_RESTITUTION * CONFIG.WALL_SPEED_KEEP, 0.05, '');
+  const { game, cars: [car] } = setup({ x: 48.5, y: 10, v: SLOW }); // toward the right wall
+  near('slow bump, wall (restitution)', bounceRatio(game, [COAST], () => -vx(car)), CONFIG.WALL_RESTITUTION, 0.1, '');
 }
 {
-  const { game, cars: [car] } = setup({ x: 17, y: 15, v: 12 }); // toward the center pillar
-  near('pillar bounce (restitution x speed kept)', bounceRatio(game, [COAST], () => -vx(car)),
-    CONFIG.OBSTACLE_RESTITUTION * CONFIG.WALL_SPEED_KEEP, 0.05, '');
+  const p = OBSTACLES[0];
+  const { game, cars: [car] } = setup({ x: (p.x - p.r) / SCALE - 1.5, y: p.y / SCALE, v: SLOW }); // toward a pillar
+  near('slow bump, pillar (restitution)', bounceRatio(game, [COAST], () => -vx(car)), CONFIG.OBSTACLE_RESTITUTION, 0.1, '');
 }
 {
   // Closing just under MIN_IMPACT_SPEED: not a hit, so no knockback, only Planck's bounce.
@@ -212,6 +215,16 @@ const sideDmg = v => CONFIG.DMG_K * v * v;                       // nose square 
   check('gentle wall bump (under WALL_MIN_SPEED) is free', !events.some(e => e.type === EVENT.WALL), JSON.stringify(events));
 }
 {
+  // Holding accel nose-first into a wall: one crash, then it bounces off instead of grinding HP away.
+  const { game, cars: [car] } = setup({ x: 46, y: 10 }); // nose 3 m from the right wall
+  let afterCrash = null;
+  run(game, [ACCEL], 4 * CONFIG.TICK_HZ, () => {
+    if (afterCrash === null && game.snapshot().events.some(e => e.type === EVENT.WALL)) afterCrash = car.hp;
+  });
+  check(`holding accel into a wall for 4 s: no grinding (${afterCrash - car.hp} HP lost after the first crash)`,
+    afterCrash !== null && car.hp === afterCrash, `crash left ${afterCrash} HP, now ${car.hp}`);
+}
+{
   const { game, cars: [a, b], events } = crash({ x: 28.35, v: 5 }, { x: 30, a: NORTH }, { hpA: 70, hpB: 5 });
   const kill = events.find(e => e.type === EVENT.KILL);
   const wantBuff = CONFIG.KILL_BUFF === 'shield' ? BUFF.SHIELD : BUFF.BOOST;
@@ -237,8 +250,8 @@ const fwdSpeed = car => Vec2.dot(car.body.getWorldVector(Vec2(1, 0)), car.body.g
 }
 {
   // Both drive at each other from rest and concuss. After the stun, a short steer right each
-  // and they get past each other. Clear area: x 28-48, y 0-15.
-  const { game, cars: [a, b] } = setup({ x: 32, y: 8 }, { x: 42, y: 8, a: Math.PI });
+  // and they get past each other. Along the open middle of the arena (y = 15 m).
+  const { game, cars: [a, b] } = setup({ x: 20, y: 15 }, { x: 30, y: 15, a: Math.PI });
   let headons = 0;
   const count = () => { headons += game.snapshot().events.filter(e => e.type === EVENT.HEADON).length; };
   run(game, [ACCEL, ACCEL], 2 * CONFIG.TICK_HZ, () => { count(); return headons > 0; });
@@ -260,6 +273,45 @@ const fwdSpeed = car => Vec2.dot(car.body.getWorldVector(Vec2(1, 0)), car.body.g
     `states ${a.s}/${b.s}, kills ${JSON.stringify(kills)}`);
 }
 
+console.log('\nMap');
+{
+  // From every spawn point, holding accel straight ahead reaches the middle without a bump.
+  const ids = SPAWN_POINTS.map((_, i) => ({ id: `c${i}` }));
+  const blocked = [];
+  for (let k = 0; k < SPAWN_POINTS.length; k++) {
+    const game = createGame(ids.slice(0, k + 1)); // car k starts at spawn point k
+    for (let j = 0; j < k; j++) game.remove(`c${j}`);
+    const car = game.cars.get(`c${k}`);
+    const input = new Map([[`c${k}`, ACCEL]]);
+    let bumps = 0;
+    for (let t = 0; t < 3 * CONFIG.TICK_HZ && Math.hypot(car.x - ARENA.W / 2, car.y - ARENA.H / 2) > CAR_SIZE.W; t++) {
+      game.step(input, dt);
+      bumps += game.snapshot().events.length;
+    }
+    const reached = Math.hypot(car.x - ARENA.W / 2, car.y - ARENA.H / 2) <= CAR_SIZE.W;
+    if (!reached || bumps) blocked.push(`spawn ${k}${reached ? '' : ' (never reached the middle)'}`);
+  }
+  check(`all ${SPAWN_POINTS.length} spawn points have a clear drive to the middle`, !blocked.length, blocked.join(', '));
+}
+
+console.log('\nBots');
+{
+  // Bots aim at the nearest car: target to the right of the nose -> positive tilt, never at FLIP_TILT.
+  const game = createGame([{ id: 'bot' }, { id: 'near' }, { id: 'far' }]); // 'bot' < 'near': the bot is the one that swerves
+  const [bot, near, far] = ['bot', 'near', 'far'].map(id => game.cars.get(id));
+  Object.assign(bot, { x: 500, y: 300, a: 0 }); // facing +x; +y (down) is to its right
+  Object.assign(far, { x: 100, y: 300 });
+  // `a` is the target's heading: 0 = facing away from the bot, PI = facing it.
+  const tiltAt = (x, y, a = 0) => { Object.assign(near, { x, y, a }); return botInput(game, { id: 'bot' }).tilt; };
+  const right = tiltAt(600, 400), left = tiltAt(600, 200), ahead = tiltAt(650, 300), behind = tiltAt(400, 290);
+  check(`a bot turns toward the nearest car (right ${right.toFixed(2)}, left ${left.toFixed(2)}, ahead ${ahead.toFixed(2)})`,
+    right > 0 && left < 0 && ahead === 0, JSON.stringify({ right, left, ahead }));
+  check(`a bot never tilts past BOT_TILT_MAX ${CONFIG.BOT_TILT_MAX} (< FLIP_TILT ${CONFIG.FLIP_TILT}), even turning around`,
+    Math.abs(behind) <= CONFIG.BOT_TILT_MAX && CONFIG.BOT_TILT_MAX < CONFIG.FLIP_TILT, `${behind}`);
+  const dodge = tiltAt(650, 300, Math.PI);
+  check(`a car coming straight at a bot: it swerves to flank (tilt ${dodge.toFixed(2)}) instead of a head-on`, dodge > 0, `${dodge}`);
+}
+
 console.log('\nOne bot round (wall hits counted, not printed)');
 {
   const bots = Array.from({ length: MIN_PLAYERS }, (_, i) => ({ id: `bot${i + 1}`, isBot: true }));
@@ -278,6 +330,8 @@ console.log('\nOne bot round (wall hits counted, not printed)');
     const st = game.stats.get(b.id);
     console.log(`  ${b.id}  hp ${car.hp}  state ${car.s}  at (${car.x.toFixed(0)}, ${car.y.toFixed(0)})  kills ${st.kills}  damage ${st.damage}`);
   }
+  check('bots find each other (car-to-car hits in the round)', (counts.hit || 0) + (counts.headon || 0) > 0, JSON.stringify(counts));
+  check('no bot flips', !counts.flip, JSON.stringify(counts));
 }
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall checks passed');
