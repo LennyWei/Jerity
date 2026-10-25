@@ -10,8 +10,10 @@
 
 // Client -> server
 export const C2S = {
-  CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId } | { error }
-  JOIN_ROOM:   'joinRoom',   // { code, name }             ack -> { playerId } | { error }
+  CREATE_ROOM: 'createRoom', // { name, bots? }            ack -> { code, playerId, rejoinKey } | { error }
+  JOIN_ROOM:   'joinRoom',   // { code, name, playerId?, rejoinKey? }  ack -> { playerId, rejoinKey } | { error }
+                             //   playerId + rejoinKey (from your earlier ack): rejoin as that player after a
+                             //   dropped connection, same car, even mid-round
   SPECTATE:    'spectate',   // { code }                   ack -> { ok } | { error }
   READY:       'ready',      // { ready }
   START:       'start',      // {}                         host only, ack -> { ok } | { error }
@@ -45,6 +47,7 @@ export const CAR_STATE = {
   FLIPPED: 1,  // tipped over: no control until RECOVER_TAPS taps
   DEAD: 2,
   STUNNED: 3,  // concussed after a head-on hit: no control for CONCUSSION_MS
+  DISCONNECTED: 4, // phone dropped: a frozen ghost (nothing hits it) until it rejoins or DISCONNECT_GRACE_MS
 };
 
 // Buff from getting a kill (snapshot field `buff`)

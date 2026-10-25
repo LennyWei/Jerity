@@ -45,7 +45,7 @@ export function createGame(players) {
   function step(inputs, dt) {
     now += dt * 1000;
     for (const car of cars.values()) {
-      if (car.body) drive(car, inputs.get(car.id) || NO_INPUT, dt);
+      if (car.body && car.s !== CAR_STATE.DISCONNECTED) drive(car, inputs.get(car.id) || NO_INPUT, dt);
     }
     world.step(dt, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
     for (const car of cars.values()) {
@@ -77,6 +77,27 @@ export function createGame(players) {
     const car = cars.get(id);
     if (car?.body) world.destroyBody(car.body);
     cars.delete(id);
+  }
+
+  /**
+   * The player's phone dropped (away) or came back. An away car is a ghost: frozen and out of
+   * the physics, so cars drive through it and nothing can hurt it. Back: it carries on (flipped
+   * stays flipped) with a moment of invulnerability. Only call between steps.
+   */
+  function setAway(id, away) {
+    const car = cars.get(id);
+    if (!car?.body || (car.s === CAR_STATE.DISCONNECTED) === away) return;
+    if (away) {
+      car.sBefore = car.s;
+      car.s = CAR_STATE.DISCONNECTED;
+      car.body.setLinearVelocity(Vec2(0, 0));
+      car.body.setAngularVelocity(0);
+      car.body.setActive(false);
+    } else {
+      car.s = car.sBefore === CAR_STATE.FLIPPED ? CAR_STATE.FLIPPED : CAR_STATE.ALIVE;
+      car.invulnUntil = now + CONFIG.RECOVER_INVULN_MS;
+      car.body.setActive(true);
+    }
   }
 
   /** One car left (flipped and stunned still count), or time is up. A lone car plays to the timer. */
@@ -406,7 +427,7 @@ export function createGame(players) {
   // ---------------------------------------------------------------------------
 
   function canTakeDamage(car) {
-    if (car.s === CAR_STATE.DEAD) return false;
+    if (car.s === CAR_STATE.DEAD || car.s === CAR_STATE.DISCONNECTED) return false;
     if (now < car.invulnUntil) return false;
     if (car.buff === BUFF.SHIELD && now < car.buffUntil) return false;
     return true;
@@ -454,7 +475,7 @@ export function createGame(players) {
   return {
     cars, stats,
     get now() { return now; },
-    step, snapshot, spawn, remove, over, winnerId,
+    step, snapshot, spawn, remove, setAway, over, winnerId,
   };
 }
 

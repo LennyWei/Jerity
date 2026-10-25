@@ -9,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
+import { CONFIG } from '../shared/config.js';
 import { createRooms } from './rooms.js';
 
 const PORT = process.env.PORT || 3000;
@@ -17,7 +18,13 @@ const DIST = path.join(__dirname, '../client/dist');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } }); // pages served elsewhere (Vite, Vercel) can connect too
+const io = new Server(server, {
+  cors: { origin: '*' }, // pages served elsewhere (Vite, Vercel) can connect too
+  // Notice a silent phone within about DISCONNECT_GRACE_MS (Socket.IO's default is 45 s), so its
+  // car turns into a ghost promptly instead of sitting there taking hits.
+  pingInterval: CONFIG.DISCONNECT_GRACE_MS / 2,
+  pingTimeout: CONFIG.DISCONNECT_GRACE_MS / 2,
+});
 const rooms = createRooms(io);
 
 app.use(express.static(DIST));

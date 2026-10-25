@@ -360,6 +360,32 @@ function botRound(mode) {
 }
 botRound('car');
 
+console.log('\nDisconnects (a ghost until the phone rejoins)');
+{
+  // Drive straight through an away car's spot: no collision, and the ghost stays put, unhurt.
+  const { game, cars: [a, ghost] } = setup({ x: 25, y: 15, v: 10 }, { x: 30, y: 15, a: NORTH });
+  game.setAway('c1', true);
+  const events = [];
+  run(game, [ACCEL, COAST], CONFIG.TICK_HZ, () => { events.push(...game.snapshot().events); });
+  check(`an away car is a ghost: driven straight through, unhurt (${ghost.hp} HP)`,
+    a.x / SCALE > 31 && ghost.hp === spec.hp && ghost.s === CAR_STATE.DISCONNECTED
+      && !events.some(e => e.type === EVENT.HIT || e.type === EVENT.HEADON),
+    `driver at x ${a.x / SCALE}, ghost ${ghost.hp} HP state ${ghost.s}, ${JSON.stringify(events)}`);
+  check('...and frozen where it dropped', Math.hypot(ghost.x / SCALE - 30, ghost.y / SCALE - 15) < 0.01, `(${ghost.x}, ${ghost.y})`);
+  game.setAway('c1', false);
+  check('back: drives again, briefly invulnerable', ghost.s === CAR_STATE.ALIVE && ghost.invulnUntil > game.now, `state ${ghost.s}`);
+}
+{
+  // Bots don't chase ghosts: the nearest car ahead is away, so the bot turns toward the other one.
+  const game = createGame([{ id: 'bot' }, { id: 'away' }, { id: 'far' }]);
+  game.setAway('away', true);
+  Object.assign(game.cars.get('bot'), { x: 500, y: 300, a: 0 });
+  Object.assign(game.cars.get('away'), { x: 600, y: 300 });
+  Object.assign(game.cars.get('far'), { x: 500, y: 500, a: 0 }); // to the bot's right
+  const tilt = botInput(game, { id: 'bot' }).tilt;
+  check(`bots ignore away cars (tilt ${tilt.toFixed(2)} toward the car on its right)`, tilt > 0, `${tilt}`);
+}
+
 // ---------------------------------------------------------------------------
 // Omni: the game's default DRIVE_MODE. The phone's tilt is a direction on screen.
 // ---------------------------------------------------------------------------

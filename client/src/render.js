@@ -339,6 +339,7 @@ export function createRenderer(canvas, opts = {}) {
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(c.a);
+    if (c.s === CAR_STATE.DISCONNECTED) ctx.globalAlpha = 0.3; // a ghost until the phone rejoins
 
     if (c.buff === BUFF.BOOST && c.s !== CAR_STATE.DEAD) { // flame trail out the back
       const len = 16 + Math.random() * 10;
@@ -431,6 +432,28 @@ export function createRenderer(canvas, opts = {}) {
       }
       ctx.restore();
     }
+
+    if (c.s === CAR_STATE.DISCONNECTED) { // phone dropped: bubble + "Disconnected" with a spinning coil
+      ctx.save();
+      ctx.globalAlpha = 0.55 + Math.sin(now / 300) * 0.15;
+      ctx.fillStyle = 'rgba(200,214,255,0.08)';
+      ctx.strokeStyle = '#c8d6ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(c.x, c.y, 34, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+      ctx.globalAlpha = 1;
+      ctx.font = '600 12px system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      const label = 'Disconnected';
+      const w = ctx.measureText(label).width + 30, y = c.y - 50;
+      ctx.fillStyle = 'rgba(11,13,18,0.75)';
+      roundRect(c.x - w / 2, y - 10, w, 20, 10); ctx.fill();
+      ctx.beginPath(); ctx.arc(c.x - w / 2 + 12, y, 5, now / 150, now / 150 + Math.PI * 1.5); ctx.stroke();
+      ctx.fillStyle = '#c8d6ff';
+      ctx.fillText(label, c.x - w / 2 + 22, y);
+      ctx.restore();
+    }
   }
 
   /**
@@ -443,7 +466,7 @@ export function createRenderer(canvas, opts = {}) {
     const fx = Math.cos(mine.a), fy = Math.sin(mine.a);
     let target = null, best = 280;
     for (const c of cars) {
-      if (c.id === me || c.s === CAR_STATE.DEAD) continue;
+      if (c.id === me || c.s === CAR_STATE.DEAD || c.s === CAR_STATE.DISCONNECTED) continue;
       const dx = c.x - mine.x, dy = c.y - mine.y, d = Math.hypot(dx, dy);
       if (d < best && (dx * fx + dy * fy) / d > Math.cos(0.5)) { best = d; target = c; } // within ~30 deg
     }

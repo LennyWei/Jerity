@@ -67,7 +67,7 @@ Data flow: phone sends `C2S.INPUT` at `INPUT_HZ` (30); server stores the latest 
 
 ## Building the real server
 
-Status (Oct 24 night): all five steps are done and tested on branch `server/phase-a`, plus knockback (cars and walls), edge spawns, the 4-pillar map, and Person 2's tilt-only controls (`DRIVE_MODE` 'omni' by default, 'car' optional; design.md section 4). `npm run sim` checks both modes. Left: disconnect grace period (`DISCONNECT_GRACE_MS`), tuning on phones.
+Status (Oct 24 night): all five steps are done and tested on branch `server/phase-a`, plus knockback (cars and walls), edge spawns, the 4-pillar map, and Person 2's tilt-only controls (`DRIVE_MODE` 'omni' by default, 'car' optional; design.md section 4). `npm run sim` checks both modes. Disconnects: 10 s ghost + rejoin by key (design.md section 8). Left: tuning on phones.
 
 1. **`rooms.js`:** lift room logic from `fake.js` as-is (codes, join/leave, colors, ready, host start, countdown, round end, scoring, TEST room). It already matches the contract.
 2. **`game.js`:** replace `stepCar` and `fakeEvents` with a Planck world per room:

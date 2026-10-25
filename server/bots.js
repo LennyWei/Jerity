@@ -19,7 +19,7 @@ export function botInput(game, bot) {
   let target = null;
   let best = Infinity;
   for (const c of game.cars.values()) {
-    if (c === me || c.s === CAR_STATE.DEAD) continue;
+    if (c === me || c.s === CAR_STATE.DEAD || c.s === CAR_STATE.DISCONNECTED) continue; // nothing to hit
     const d = Math.hypot(c.x - me.x, c.y - me.y);
     if (d < best) { best = d; target = c; }
   }

@@ -79,7 +79,7 @@ export const CONFIG = {
   ROUND_TIME_S: 120,     // on timeout, highest HP wins
   RESULTS_MS: 5000,      // results screen, then back to the lobby (TEST room: next round)
   DEV_MIN_PLAYERS: 1,    // used when the room was created with bots
-  DISCONNECT_GRACE_MS: 5000,
+  DISCONNECT_GRACE_MS: 10000, // a dropped phone keeps its car (a frozen ghost) this long to rejoin
   SCORE_PER_DAMAGE: 1,   // 1 point per HP dealt to other players
   SCORE_KILL: 100,
   SCORE_WIN: 150,

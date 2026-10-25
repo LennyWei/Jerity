@@ -319,7 +319,7 @@ Send `input` at 30 Hz with the accumulated tap count, then reset it.
 - Each player gets the lowest free color index.
 - Host is the creator; if the host leaves, the oldest remaining human becomes host.
 - Joining mid-round is refused (except in bot rooms, for testing).
-- Disconnect during play: the car keeps zero input for `DISCONNECT_GRACE_MS`, then is removed (counts as dead, no kill credit).
+- Disconnect during play: for `DISCONNECT_GRACE_MS` (10 s) the car is a ghost (`CAR_STATE.DISCONNECTED`: frozen, out of the physics, nothing hits it, bots ignore it; drawn faint in a bubble with a spinning "Disconnected" label). The phone rejoins with `playerId` + the secret `rejoinKey` from its join ack and gets the same car back, briefly invulnerable, even mid-round, even if the server hadn't noticed the drop yet. No rejoin in time: removed (no kill credit). The server's heartbeat is `DISCONNECT_GRACE_MS / 2`, so a silent phone is noticed within about 10 s.
 
 ### Bots (`/server/bots.js`)
 `bots: 3` on `createRoom` adds 3 server-side players. MVP bots steer toward the nearest car with full accel and moderate tilt (they never flip). When the target faces a bot, the lower id of the two aims `BOT_FLANK_DIST` beside it instead, so bots swerve into side hits rather than head-on double KOs or circling each other; with the target behind it, a bot lets off the throttle to turn tighter. Essential for testing collisions with one or two phones and for tuning alone.

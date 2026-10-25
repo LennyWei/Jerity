@@ -65,8 +65,8 @@ function enterRoomView() {
   else showLobby();
 }
 
-async function enterRoom(playerId, code, name) {
-  Object.assign(session, { playerId, code, name });
+async function enterRoom(playerId, code, name, rejoinKey) {
+  Object.assign(session, { playerId, code, name, rejoinKey });
   history.replaceState(null, '', `/join/${code}${keepQuery()}`);
   if (session.lobby?.code === code) enterRoomView();
   else screen = 'waiting'; // the lobby event right after the ack decides where we go
@@ -80,14 +80,14 @@ async function onCreate(name, bots) {
   await game.requestMotionPermission();
   const res = await net.request(C2S.CREATE_ROOM, { name, bots });
   if (res.error) return res.error;
-  await enterRoom(res.playerId, res.code, name);
+  await enterRoom(res.playerId, res.code, name, res.rejoinKey);
 }
 
 async function onJoin(name, code) {
   await game.requestMotionPermission();
   const res = await net.request(C2S.JOIN_ROOM, { code, name });
   if (res.error) return res.error;
-  await enterRoom(res.playerId, code, name);
+  await enterRoom(res.playerId, code, name, res.rejoinKey);
 }
 
 // ---------------------------------------------------------------------------
@@ -105,16 +105,19 @@ net.on(S2C.COUNTDOWN, ({ seconds }) => {
   if (session.playerId && seconds > 0 && (screen === 'lobby' || screen === 'results')) showGame(seconds);
 });
 
-// Connection: show it when it drops; on reconnect the server has forgotten us, so rejoin.
+// Connection: show it when it drops; on reconnect, rejoin as the same player. The server keeps
+// our car (as a ghost) for DISCONNECT_GRACE_MS, even mid-round; the key proves it is us.
 let everConnected = false;
 net.onStatus(async (up) => {
   banner.textContent = up ? '' : everConnected ? 'Connection lost · reconnecting…' : '';
   if (!up) return;
   if (!everConnected) { everConnected = true; return; }
   if (!session.code) return;
-  const res = await net.request(C2S.JOIN_ROOM, { code: session.code, name: session.name });
+  const res = await net.request(C2S.JOIN_ROOM, {
+    code: session.code, name: session.name, playerId: session.playerId, rejoinKey: session.rejoinKey,
+  });
   if (res.error) return goHome(session.code, `Lost connection: ${res.error}`);
-  session.playerId = res.playerId;
+  Object.assign(session, { playerId: res.playerId, rejoinKey: res.rejoinKey });
   screen = 'waiting';
 });
 

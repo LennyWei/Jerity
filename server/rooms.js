@@ -57,7 +57,7 @@ export function createRooms(io) {
     return 0;
   }
 
-  function addPlayer(room, id, name, isBot = false) {
+  function addPlayer(room, id, name, isBot = false, socketId = null) {
     const p = {
       id,
       name: String(name || 'Player').slice(0, NAME_MAX),
@@ -65,6 +65,10 @@ export function createRooms(io) {
       ready: isBot,
       isBot,
       input: { ...NO_INPUT },
+      socketId,                                   // the connection playing as this player
+      key: isBot ? null : crypto.randomUUID(),    // rejoin secret, only ever sent to this player
+      away: false,                                // connection dropped, rejoin pending
+      dropTimer: null,
     };
     room.players.set(id, p);
     return p;
@@ -98,6 +102,23 @@ export function createRooms(io) {
     room.timers = [];
   }
 
+  // Leaving for good: LEAVE, a disconnect outside a round, or a dropped phone that didn't rejoin
+  // within DISCONNECT_GRACE_MS. The oldest human left becomes host; a room with none is deleted.
+  function removePlayer(room, id) {
+    const p = room.players.get(id);
+    if (!p) return;
+    clearTimeout(p.dropTimer);
+    room.players.delete(id);
+    room.game?.remove(id);
+    if (room.hostId === id) room.hostId = humans(room)[0]?.id ?? null;
+    if (humans(room).length === 0 && room.code !== TEST_CODE) {
+      clearTimers(room);
+      rooms.delete(room.code);
+      return;
+    }
+    broadcastLobby(room);
+  }
+
   // ---------------------------------------------------------------------------
   // Round flow
   // ---------------------------------------------------------------------------
@@ -107,6 +128,7 @@ export function createRooms(io) {
     room.state = ROOM_STATE.COUNTDOWN;
     for (const p of room.players.values()) p.input = { ...NO_INPUT };
     room.game = createGame([...room.players.values()]);
+    for (const p of room.players.values()) if (p.away) room.game.setAway(p.id, true); // still rejoining
     broadcastLobby(room);
 
     let s = CONFIG.COUNTDOWN_S;
@@ -207,6 +229,9 @@ export function createRooms(io) {
   // ---------------------------------------------------------------------------
 
   function attach(socket) {
+    // The player this socket plays as: its own id, or an earlier one it rejoined as.
+    socket.data.pid = socket.id;
+    const pid = () => socket.data.pid;
     const myRoom = () => rooms.get(socket.data.code);
 
     // Handlers get (msg, ack): msg is always an object and ack always callable, even when a
@@ -225,12 +250,12 @@ export function createRooms(io) {
       leave(); // creating a room from inside another one leaves the old one
       const code = makeCode();
       const bots = Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(Number(msg.bots)) || 0));
-      const room = newRoom(code, socket.id, bots > 0);
-      addPlayer(room, socket.id, msg.name);
+      const room = newRoom(code, pid(), bots > 0);
+      const p = addPlayer(room, pid(), msg.name, false, socket.id);
       for (let i = 1; i <= bots; i++) addPlayer(room, `bot${botSeq++}`, `Bot ${i}`, true);
       socket.join(code);
       socket.data.code = code;
-      ack({ code, playerId: socket.id });
+      ack({ code, playerId: p.id, rejoinKey: p.key });
       broadcastLobby(room);
     });
 
@@ -238,18 +263,35 @@ export function createRooms(io) {
       const code = String(msg.code || '').trim().toUpperCase();
       const room = rooms.get(code);
       if (!room) return ack({ error: 'Room not found' });
-      if (room.players.has(socket.id)) return ack({ playerId: socket.id }); // double-tapped Join
+      // Rejoining after a dropped connection: same player, same car. The key proves it is them
+      // (player ids are public). The server may not have noticed the drop yet: retire the old socket.
+      const back = room.players.get(String(msg.playerId || ''));
+      if (back && !back.isBot && msg.rejoinKey === back.key) {
+        const old = io.sockets.sockets.get(back.socketId);
+        if (old && old !== socket) { old.data.code = undefined; old.disconnect(true); }
+        leave();
+        clearTimeout(back.dropTimer);
+        back.away = false;
+        back.socketId = socket.id;
+        room.game?.setAway(back.id, false);
+        socket.data.pid = back.id;
+        socket.join(code);
+        socket.data.code = code;
+        ack({ playerId: back.id, rejoinKey: back.key });
+        return broadcastLobby(room);
+      }
+      if (room.players.has(pid())) return ack({ playerId: pid() }); // double-tapped Join
       if (room.players.size >= MAX_PLAYERS) return ack({ error: 'Room is full' });
       const midRound = room.state !== ROOM_STATE.LOBBY;
       if (midRound && !room.devRoom) return ack({ error: 'Round in progress' });
 
       leave(); // only after the join is known to succeed
-      const p = addPlayer(room, socket.id, msg.name);
+      const p = addPlayer(room, pid(), msg.name, false, socket.id);
       if (midRound) room.game.spawn(p);
-      if (!room.hostId) room.hostId = socket.id;
+      if (!room.hostId) room.hostId = pid();
       socket.join(code);
       socket.data.code = code;
-      ack({ playerId: socket.id });
+      ack({ playerId: p.id, rejoinKey: p.key });
       broadcastLobby(room);
     });
 
@@ -263,7 +305,7 @@ export function createRooms(io) {
 
     on(C2S.READY, (msg) => {
       const room = myRoom();
-      const p = room?.players.get(socket.id);
+      const p = room?.players.get(pid());
       if (!p) return;
       p.ready = !!msg.ready;
       broadcastLobby(room);
@@ -271,7 +313,7 @@ export function createRooms(io) {
 
     on(C2S.START, (_msg, ack) => {
       const room = myRoom();
-      if (!room || room.hostId !== socket.id) return ack({ error: 'Only the host can start' });
+      if (!room || room.hostId !== pid()) return ack({ error: 'Only the host can start' });
       if (room.state !== ROOM_STATE.LOBBY) return ack({ error: 'Already started' });
       const min = room.devRoom ? CONFIG.DEV_MIN_PLAYERS : MIN_PLAYERS;
       if (room.players.size < min) return ack({ error: `Need at least ${min} players` });
@@ -280,7 +322,7 @@ export function createRooms(io) {
     });
 
     on(C2S.INPUT, (raw) => {
-      const p = myRoom()?.players.get(socket.id);
+      const p = myRoom()?.players.get(pid());
       if (!p) return;
       const s = sanitizeInput(raw);
       p.input = { ...s, taps: p.input.taps + s.taps }; // taps accumulate until a tick consumes them
@@ -289,20 +331,25 @@ export function createRooms(io) {
     function leave() {
       const room = myRoom();
       if (!room) return;
-      room.players.delete(socket.id);
-      room.game?.remove(socket.id);
       socket.leave(room.code);
       socket.data.code = undefined;
-      if (room.hostId === socket.id) room.hostId = humans(room)[0]?.id ?? null;
-      if (humans(room).length === 0 && room.code !== TEST_CODE) {
-        clearTimers(room);
-        rooms.delete(room.code);
-        return;
-      }
+      removePlayer(room, pid());
+    }
+
+    // A dropped connection during a round keeps the car as a ghost (game.setAway) for
+    // DISCONNECT_GRACE_MS, so the phone can rejoin as the same player. Otherwise it leaves.
+    function drop() {
+      const room = myRoom();
+      const p = room?.players.get(pid());
+      if (!p || !room.game) return leave();
+      p.away = true;
+      p.input = { ...NO_INPUT };
+      room.game.setAway(p.id, true);
+      p.dropTimer = setTimeout(() => removePlayer(room, p.id), CONFIG.DISCONNECT_GRACE_MS);
       broadcastLobby(room);
     }
     on(C2S.LEAVE, () => leave());
-    socket.on('disconnect', () => leave());
+    socket.on('disconnect', drop);
   }
 
   // ---------------------------------------------------------------------------
